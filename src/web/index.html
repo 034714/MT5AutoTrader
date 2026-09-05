@@ -1,0 +1,1801 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MT5AutoTrader — MT5 自动交易</title>
+<style>
+  :root {
+    --bg: #0f1419; --panel: #1a2129; --panel2: #222b36; --border: #2d3948;
+    --text: #d8e1ea; --muted: #8a98a8; --accent: #4da3ff; --green: #2ecc71;
+    --red: #e74c3c; --yellow: #f1c40f; --orange: #e67e22;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font: 14px/1.6 "Microsoft YaHei", "Segoe UI", sans-serif; }
+  header { display: flex; align-items: center; gap: 16px; padding: 12px 20px; background: var(--panel); border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+  header h1 { font-size: 18px; }
+  header h1 span { color: var(--accent); }
+  .pill { padding: 3px 12px; border-radius: 12px; font-size: 12px; font-weight: bold; }
+  .pill.ok { background: rgba(46,204,113,.15); color: var(--green); }
+  .pill.bad { background: rgba(231,76,60,.15); color: var(--red); }
+  .pill.warn { background: rgba(241,196,15,.15); color: var(--yellow); }
+  .pill.gray { background: rgba(138,152,168,.15); color: var(--muted); }
+  #clock { margin-left: auto; color: var(--muted); font-size: 12px; }
+  nav { display: flex; gap: 4px; padding: 8px 20px 0; background: var(--panel); border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+  nav button { background: none; border: none; border-bottom: 2px solid transparent; color: var(--muted); padding: 8px 16px; font-size: 14px; cursor: pointer; }
+  nav button.active { color: var(--accent); border-bottom-color: var(--accent); }
+  nav button:hover { color: var(--text); }
+  main { padding: 20px; max-width: 1280px; margin: 0 auto; }
+  .tab { display: none; }
+  .tab.active { display: block; }
+  .grid { display: grid; gap: 14px; }
+  .grid.cols2 { grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); }
+  .grid.cols3 { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
+  .card h3 { font-size: 14px; color: var(--accent); margin-bottom: 10px; }
+  .row { display: flex; align-items: center; gap: 10px; margin: 6px 0; flex-wrap: wrap; }
+  .row label { min-width: 110px; color: var(--muted); }
+  .kv { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px dashed var(--border); }
+  .kv:last-child { border-bottom: none; }
+  .kv .k { color: var(--muted); }
+  input, select { background: var(--panel2); border: 1px solid var(--border); color: var(--text); border-radius: 5px; padding: 6px 10px; font-size: 13px; }
+  input[type=number] { width: 110px; }
+  input[type=text] { min-width: 220px; }
+  button.btn { background: var(--accent); border: none; color: #fff; border-radius: 5px; padding: 7px 16px; cursor: pointer; font-size: 13px; }
+  button.btn:hover { filter: brightness(1.15); }
+  button.btn:disabled { opacity: .45; cursor: not-allowed; }
+  button.btn.danger { background: var(--red); }
+  button.btn.green { background: var(--green); color: #08240f; }
+  button.btn.ghost { background: var(--panel2); border: 1px solid var(--border); }
+  button.btn.small { padding: 4px 10px; font-size: 12px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: normal; }
+  tr:hover td { background: rgba(77,163,255,.05); }
+  pre.log { background: #0a0e12; border: 1px solid var(--border); border-radius: 6px; padding: 10px; font: 12px/1.5 Consolas, monospace; max-height: 420px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
+  pre.log .lv-INFO { color: #cfd8e3; }
+  pre.log .lv-SUCCESS { color: #4fd08a; }
+  pre.log .lv-WARNING { color: #e7c66b; }
+  pre.log .lv-ERROR, pre.log .lv-CRITICAL { color: #ff6b6b; }
+  pre.log .lv-DEBUG, pre.log .lv-TRACE { color: #7d8a99; }
+  .msg { padding: 8px 12px; border-radius: 6px; margin: 8px 0; display: none; font-size: 13px; }
+  .msg.ok { display: block; background: rgba(46,204,113,.12); color: var(--green); }
+  .msg.err { display: block; background: rgba(231,76,60,.12); color: var(--red); }
+  .hint { color: var(--muted); font-size: 12px; }
+  .section-note { background: rgba(77,163,255,.08); border-left: 3px solid var(--accent); color: var(--text); padding: 9px 12px; border-radius: 4px; margin: 0 0 14px; font-size: 13px; }
+  .step { display: flex; gap: 10px; align-items: flex-start; padding: 12px 0; border-bottom: 1px solid var(--border); }
+  .step:last-child { border-bottom: none; }
+  .step-num { flex: 0 0 26px; height: 26px; border-radius: 50%; background: var(--accent); color: #071421; font-weight: 700; text-align: center; line-height: 26px; }
+  .step-body { min-width: 0; flex: 1; }
+  .step-title { font-weight: 600; margin-bottom: 6px; }
+  .field-help { color: var(--muted); font-size: 12px; margin: 2px 0 0 120px; }
+  .data-meta { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+  .data-meta span { background: var(--panel2); border: 1px solid var(--border); color: var(--muted); border-radius: 4px; padding: 3px 8px; font-size: 12px; }
+  .progress-wrap { height: 10px; background: var(--panel2); border: 1px solid var(--border); border-radius: 5px; overflow: hidden; margin: 10px 0 6px; }
+  .progress-bar { height: 100%; width: 0; background: var(--green); transition: width .3s ease; }
+  .status-line { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 12px; }
+  .danger-note { background: rgba(231,76,60,.10); border: 1px solid rgba(231,76,60,.35); color: #f4aaa3; padding: 9px 12px; border-radius: 5px; font-size: 12px; margin-top: 10px; }
+  .mode-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .mode-step { display: flex; gap: 8px; align-items: center; color: var(--muted); font-size: 12px; margin-top: 9px; }
+  .mode-step strong { color: var(--text); }
+  .mode-step .step-num { flex-basis: 22px; height: 22px; line-height: 22px; font-size: 12px; }
+  @media (max-width: 760px) { .grid.cols2 { grid-template-columns: 1fr; } .field-help { margin-left: 0; } }
+  .short { color: var(--red); font-weight: bold; }
+  .flat { color: var(--muted); font-weight: bold; }
+  .score { color: var(--yellow); }
+  .breakeven-table td input { width: 90px; }
+  #overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.65); z-index: 50; align-items: center; justify-content: center; }
+  #overlay .box { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 24px; max-width: 460px; }
+  #overlay .box h3 { margin-bottom: 10px; }
+  #overlay .box p { margin-bottom: 16px; }
+  .charts img { max-width: 100%; border: 1px solid var(--border); border-radius: 6px; margin: 8px 0; }
+  .spin { display: inline-block; animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<header>
+  <h1>MT5<span>AutoTrader</span></h1>
+  <span id="hdr-runner" class="pill gray">运行状态加载中</span>
+  <span id="hdr-mode" class="pill gray">模式未知</span>
+  <span id="hdr-mt5" class="pill gray">MT5 状态加载中</span>
+  <span id="hdr-autotrade" class="pill gray" style="display:none">算法交易状态未知</span>
+  <span id="clock"></span>
+</header>
+
+<nav>
+  <button class="active" data-tab="overview">总览</button>
+  <button data-tab="strategies">策略库</button>
+  <button data-tab="training">训练</button>
+  <button data-tab="backtest">回测</button>
+  <button data-tab="control">交易控制</button>
+  <button data-tab="risk">风控参数</button>
+  <button data-tab="manual">手动交易</button>
+  <button data-tab="history">历史成交</button>
+  <button data-tab="logs">日志</button>
+</nav>
+
+<main>
+  <!-- ═══ 总览 ═══ -->
+  <section id="tab-overview" class="tab active">
+    <div class="grid cols3" style="margin-bottom:14px">
+      <div class="card">
+        <h3>MT5 账户</h3>
+        <div id="ov-account"><div class="hint">加载中…</div></div>
+      </div>
+      <div class="card">
+        <h3>Runner</h3>
+        <div id="ov-runner"><div class="hint">加载中…</div></div>
+      </div>
+      <div class="card">
+        <h3>使用提示</h3>
+        <div class="hint" style="line-height:2">
+          ① 训练页选数据训练 → ② 策略库导入并绑定品种 →<br>
+          ③ 交易控制页启动 Runner（默认 dry-run 演练）→<br>
+          ④ 确认信号正常后切真实模式。<br>
+          MT5 终端需手动打开并登录，本软件不会自动拉起。
+        </div>
+      </div>
+    </div>
+    <div class="card" style="margin-bottom:14px">
+      <h3>策略信号</h3>
+      <table><thead><tr>
+        <th>品种</th><th>策略</th><th>方向</th><th>强度</th><th>仓位值</th><th>K线时间（本地）</th><th>状态</th>
+      </tr></thead><tbody id="ov-signals"><tr><td colspan="7" class="hint">加载中…</td></tr></tbody></table>
+    </div>
+    <div class="card" style="margin-bottom:14px">
+      <h3>当前持仓（与 MT5 实时同步）</h3>
+      <table><thead><tr>
+        <th>品种</th><th>方向</th><th>手数</th><th>开仓价</th><th>现价</th><th>止损</th><th>止盈</th><th>浮动盈亏</th><th>开仓时间</th><th>来源</th><th>操作</th>
+      </tr></thead><tbody id="ov-positions"><tr><td colspan="11" class="hint">加载中…</td></tr></tbody></table>
+      <div class="hint" style="margin-top:8px">「平仓」直接向 MT5 发送平仓指令；修改止损/止盈同理。注意：平仓后若绑定策略信号仍在，Runner 可能在下一根收盘 K 线重新开仓——想彻底不交易请先到「策略库」解绑。</div>
+      <div id="ov-msg" class="msg"></div>
+    </div>
+    <div class="card" style="margin-bottom:14px">
+      <h3>实时 K 线与关键位</h3>
+      <div class="row" style="flex-wrap:wrap">
+        <input type="text" id="sr-chart-symbol" list="mt5-symbol-list" autocomplete="off"
+          style="min-width:140px" placeholder="品种，如 BTCUSD_">
+        <datalist id="mt5-symbol-list"></datalist>
+        <select id="sr-chart-tf">
+          <option value="M5">M5</option><option value="M15">M15</option>
+          <option value="M30">M30</option><option value="H1" selected>H1</option>
+          <option value="H4">H4</option><option value="D1">D1</option>
+        </select>
+        <span id="sr-chart-pos-label" class="hint" style="display:none">操作仓位</span>
+        <select id="sr-chart-pos" style="display:none;min-width:190px"
+          onchange="srChart.posTicket = this.value; drawSRChart();"></select>
+        <button class="btn small" onclick="loadSRChart()">刷新</button>
+        <label class="hint"><input type="checkbox" id="sr-chart-auto" checked> 自动刷新（15 秒）</label>
+      </div>
+      <div id="sr-chart-meta" class="hint" style="margin:4px 0 6px">加载中…</div>
+      <div style="position:relative">
+        <canvas id="sr-chart" height="420" style="width:100%;display:block;background:var(--panel2);border:1px solid var(--border);border-radius:6px;cursor:crosshair"></canvas>
+        <div id="sr-chart-tip" style="position:absolute;display:none;pointer-events:none;background:rgba(10,12,16,.92);border:1px solid var(--border);border-radius:6px;padding:6px 9px;font-size:12px;line-height:1.5;white-space:pre;z-index:5"></div>
+      </div>
+      <div id="sr-chart-legend" class="hint" style="margin-top:6px"></div>
+      <div class="hint" style="margin-top:4px">滚轮缩放 · 拖动平移 · 双击复位 · 鼠标悬停看明细。绿色=支撑带，红色=压力带；蓝线=开仓价，红/绿虚线=止损/止盈（<strong>按住上下拖动，松手后弹确认框才生效</strong>；不在视野内时显示在上下边缘），橙虚线=止盈一半；▲/▼=历史入场（蓝=多、橙=空），圆点=离场（绿=盈利、红=亏损）。手动拖动设置的止损由你全权管理，不会被自动拉回；阶梯保本仍生效。</div>
+    </div>
+    <div class="card">
+      <h3>最近动作</h3>
+      <pre class="log" id="ov-actions" style="max-height:240px">加载中…</pre>
+    </div>
+  </section>
+
+  <!-- ═══ 策略库 ═══ -->
+  <section id="tab-strategies" class="tab">
+    <div class="grid cols2">
+      <div class="card">
+        <h3>本软件策略库（strategies/）</h3>
+        <div class="hint" style="margin-bottom:8px">训练完成的策略会自动出现在这里；也可以把 .json 策略文件直接放进 strategies 文件夹后点“刷新列表”。</div>
+        <div class="row" style="margin-bottom:6px"><button class="btn small ghost" onclick="loadStrategies()">刷新列表</button></div>
+        <div id="st-list" class="hint">加载中…</div>
+        <div id="st-msg" class="msg"></div>
+      </div>
+      <div>
+        <div class="card">
+          <h3>绑定策略 → MT5 品种</h3>
+          <div class="row"><label>策略</label><select id="bind-strategy" style="min-width:260px"></select></div>
+          <div class="row"><label>MT5 品种</label><input type="text" id="bind-symbol" placeholder="例如 ETHUSD_（注意下划线）">
+            <button class="btn small ghost" onclick="loadSymbols()">拉取可选品种</button></div>
+          <div id="symbol-sugg" class="hint"></div>
+          <div class="row"><label>手数</label><input type="number" id="bind-lot" value="0.01" step="0.01" min="0.01"></div>
+          <div class="row"><button class="btn" onclick="bindStrategy()">绑定</button></div>
+          <div id="bind-msg" class="msg"></div>
+          <h3 style="margin-top:14px">当前绑定</h3>
+          <table><thead><tr><th>品种</th><th>策略</th><th>手数</th><th>操作</th></tr></thead>
+            <tbody id="bind-list"><tr><td colspan="4" class="hint">加载中…</td></tr></tbody></table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ 训练 ═══ -->
+  <section id="tab-training" class="tab">
+    <div class="section-note"><strong>训练流程：</strong>选择本地 Parquet 数据 → 先用快速试跑确认环境 → 开始训练。训练完成后，最优策略会保存到本软件的 <code>strategies/</code> 文件夹，再到「策略库」手动导入并绑定。</div>
+    <div class="grid cols2">
+      <div class="card">
+        <h3>训练配置</h3>
+        <div class="step">
+          <div class="step-num">1</div>
+          <div class="step-body">
+            <div class="step-title">选择训练数据</div>
+            <div class="row"><select id="tr-file" onchange="updateTrainFileMeta(window._trainFiles || [])" style="min-width:320px;max-width:100%"></select></div>
+            <div class="hint">数据目录：<span id="tr-dir">加载中…</span></div>
+            <div id="tr-file-meta" class="data-meta"><span>请选择数据文件</span></div>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num">2</div>
+          <div class="step-body">
+            <div class="step-title">设置训练参数</div>
+            <div class="row"><input type="number" id="tr-steps" placeholder="自定义步数" min="10">
+              <button class="btn small ghost" onclick="setTrainPreset(60)">快速试跑 60 步</button>
+              <button class="btn small ghost" onclick="setTrainPreset(9000)">正式训练 9000 步</button></div>
+            <div class="field-help">默认自动续训：沿用上次训练成果继续（依据 checkpoints 里的检查点）。
+              步数填"总步数"——上次跑了 60 步想继续，这次就填 120 或 9000；想推倒重来才勾选"从头训练"。</div>
+            <div class="row"><label class="hint"><input type="checkbox" id="tr-scratch"> 从头训练（清除检查点）</label></div>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num">3</div>
+          <div class="step-body">
+            <div class="step-title">开始训练</div>
+            <div class="row">
+              <button class="btn green" onclick="startTraining()">开始训练</button>
+              <button class="btn danger" onclick="stopTraining()">停止训练</button>
+            </div>
+            <div id="tr-msg" class="msg"></div>
+            <div class="hint">训练输出：<code>strategies/best_品种.json</code>、<code>checkpoints/</code>、训练日志。</div>
+          </div>
+        </div>
+        <div class="card" style="background:var(--panel2);margin-top:12px">
+          <h3>从 MT5 获取数据</h3>
+          <div class="row"><label>品种</label><input type="text" id="ex-symbol" placeholder="ETHUSD_" value="ETHUSD_">
+            <label>周期</label><select id="ex-tf">
+              <option>M5</option><option>M15</option><option>M30</option>
+              <option selected>H1</option><option>H4</option><option>D1</option>
+            </select>
+            <label>根数</label><input type="number" id="ex-bars" value="6000" min="800">
+            <button class="btn small" onclick="exportMt5()">只获取并保存</button></div>
+          <div class="row"><label>数据保存位置</label><input type="text" id="cfg-datadir" style="min-width:260px">
+            <button class="btn small ghost" onclick="saveDataDir()">保存位置</button></div>
+          <div class="hint">MT5 终端打开后，软件会按所选周期自动读取 K 线并保存到上面的目录。你不需要手动制作 Parquet 文件。</div>
+          <div class="row"><button class="btn small ghost" onclick="loadDataFiles()">刷新数据文件</button></div>
+          <div class="row" style="margin-top:10px"><label>直接训练</label><input type="text" id="direct-symbol" placeholder="ETHUSD_" value="ETHUSD_">
+            <label>周期</label><select id="direct-tf">
+              <option>M5</option><option>M15</option><option>M30</option>
+              <option selected>H1</option><option>H4</option><option>D1</option>
+            </select>
+            <label>训练步数</label><input type="number" id="direct-steps" placeholder="60" min="10" value="60">
+            <button class="btn small green" onclick="startDirectTraining()">从 MT5 获取并训练</button></div>
+          <div class="hint">点击后自动完成：按所选周期读取 MT5 → 保存内部数据 → 开始训练。训练完成后策略仍需到“策略库”手动绑定。</div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>训练状态</h3>
+        <div id="tr-progress" class="status-line"><span>未运行</span><span>—</span></div>
+        <div class="progress-wrap"><div id="tr-progress-bar" class="progress-bar"></div></div>
+        <div id="tr-status" class="hint">选择数据后开始训练。训练进程独立运行，关闭页面不会中断。</div>
+        <h3 style="margin-top:14px">训练分数曲线（best_score）</h3>
+        <canvas id="tr-chart" width="600" height="180" style="width:100%;height:180px;background:var(--panel2);border:1px solid var(--border);border-radius:6px"></canvas>
+        <div id="tr-chart-meta" class="hint" style="margin-top:4px">暂无训练历史</div>
+        <div class="card" style="background:var(--panel2);margin-top:14px">
+          <h3>训练产物</h3>
+          <div class="kv"><span class="k">最优策略</span><span><code>strategies/best_品种.json</code></span></div>
+          <div class="kv"><span class="k">检查点</span><span><code>checkpoints/</code></span></div>
+          <div class="kv"><span class="k">训练日志</span><span><code>logs/train_*.log</code></span></div>
+          <div class="hint" style="margin-top:8px">训练完成后，打开「策略库」页即可看到新策略；交易引擎不会自动绑定，需手动绑定品种。</div>
+        </div>
+        <h3 style="margin-top:14px">实时日志</h3>
+        <pre class="log" id="tr-log" style="margin-top:8px">暂无日志</pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ 回测 ═══ -->
+  <section id="tab-backtest" class="tab">
+    <div class="card" style="margin-bottom:14px">
+      <h3>运行回测</h3>
+      <div class="row"><label>策略</label><select id="bt-strategy" style="min-width:260px"></select></div>
+      <div class="row"><label>数据文件</label><select id="bt-file" style="min-width:320px"></select>
+        <span class="hint">留空则用策略内记录的数据</span></div>
+      <div class="row"><label>手续费%</label><input type="number" id="bt-commission" value="0.02" step="0.01" min="0">
+        <label>滑点%</label><input type="number" id="bt-slippage" value="0.01" step="0.01" min="0"></div>
+      <div class="row"><button class="btn green" onclick="startBacktest()">开始回测</button>
+        <button class="btn danger" onclick="stopBacktest()">停止</button>
+        <button class="btn ghost" onclick="loadBacktestReport(true)">刷新报告</button></div>
+      <div id="bt-msg" class="msg"></div>
+      <pre class="log" id="bt-log" style="margin-top:8px">暂无日志</pre>
+    </div>
+    <div class="card">
+      <h3>回测报告</h3>
+      <div id="bt-report" class="hint">暂无报告</div>
+      <div class="charts" id="bt-charts"></div>
+    </div>
+  </section>
+
+  <!-- ═══ 交易控制 ═══ -->
+  <section id="tab-control" class="tab">
+    <div class="grid cols2">
+      <div class="card">
+        <h3>Runner 启停</h3>
+        <div class="row">
+          <button class="btn green" id="ctl-start" onclick="startRunner()">启动 Runner</button>
+          <button class="btn danger" id="ctl-stop" onclick="stopRunner()">停止 Runner</button>
+        </div>
+        <div id="ctl-runner-info" class="hint" style="margin-top:8px">加载中…</div>
+        <div class="hint" style="margin-top:8px">
+          Runner 每 5~10 秒一圈：新收盘 K线算信号对账 + 实时风控（初始止损/阶梯保本）。
+          修改绑定/风控参数后自动热更新，无需重启。
+        </div>
+      </div>
+      <div class="card">
+        <h3>运行模式（安全开关）</h3>
+        <div class="row"><label>当前模式</label><span id="ctl-mode" class="pill gray">未知</span></div>
+        <div class="mode-actions">
+          <button class="btn" id="ctl-tolive" onclick="askGoLive()">请求切换为真实下单</button>
+          <button class="btn ghost" id="ctl-todry" onclick="setDryRun(true)">立即回到 dry-run</button>
+        </div>
+        <div class="mode-step"><span class="step-num">1</span><span><strong>点击“请求切换为真实下单”</strong>，先进行确认</span></div>
+        <div class="mode-step"><span class="step-num">2</span><span><strong>在弹窗点击“确认执行”</strong>，确认后才会允许发单</span></div>
+        <div class="danger-note">真实模式会允许 Runner 向 MT5 发送订单。切换后需要重启 Runner 才生效；不确定时请保持 dry-run。</div>
+        <div class="hint" style="margin-top:8px">
+          dry-run：信号照算、动作只记日志，不发订单（默认）。<br>
+          真实下单：二次确认后生效，切换后重启 Runner。<br>
+          模式切换后需重启 Runner 生效。
+        </div>
+        <h3 style="margin-top:14px">交易限制</h3>
+        <div class="row"><label>信号阈值</label><input type="number" id="cfg-exposure" step="0.01" min="0.01" max="0.5">
+          <span class="hint">|仓位| ≥ 此值才开仓（默认 0.05）</span></div>
+        <div class="row"><label>单笔最大手数</label><input type="number" id="cfg-maxlot" step="0.01" min="0.01"></div>
+        <div class="row"><label>最大同时持仓品种</label><input type="number" id="cfg-maxpos" min="1" max="20"></div>
+        <div class="row"><button class="btn" onclick="saveLimits()">保存交易限制</button></div>
+        <div id="ctl-msg" class="msg"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ 风控参数 ═══ -->
+  <section id="tab-risk" class="tab">
+    <div class="grid cols2">
+      <div class="card">
+        <h3>实时风控</h3>
+        <div class="row"><label>实时监控</label>
+          <label class="hint"><input type="checkbox" id="rk-enabled"> 启用价格监控（初始止损+阶梯保本）</label></div>
+        <div class="row"><label>监控间隔(秒)</label><input type="number" id="rk-interval" min="5" max="10">
+          <span class="hint">5~10 秒</span></div>
+        <div class="row"><label>初始止损%</label><input type="number" id="rk-sl" step="0.005" min="0.005">
+          <span class="hint">填正数，如 2 表示 -2%</span></div>
+        <div class="row"><button class="btn" onclick="saveRisk()">保存风控参数</button></div>
+        <div id="rk-msg" class="msg"></div>
+        <div class="hint" style="margin-top:8px">
+          规则：开仓即设初始止损；浮盈达到档位触发值后止损上移到锁定价；
+          止损只收紧不放松；多头按 bid、空头按 ask 计算浮盈；重启后锁定档位不回退。
+        </div>
+      </div>
+      <div class="card">
+        <h3>阶梯保本档位</h3>
+        <table class="breakeven-table"><thead><tr>
+          <th>浮盈达到</th><th>锁定利润</th><th></th></tr></thead>
+          <tbody id="rk-levels"></tbody></table>
+        <div class="row" style="margin-top:8px">
+          <button class="btn small ghost" onclick="addLevel()">加一档</button>
+          <button class="btn" onclick="saveRisk()">保存档位</button></div>
+      </div>
+      <div class="card">
+        <h3>支撑/阻力优化（开仓时自动执行）</h3>
+        <div class="row"><label>启用 S/R 优化</label>
+          <label class="hint"><input type="checkbox" id="rk-sr-enabled"> 开仓时按关键位收紧止损、自动挂止盈</label></div>
+        <div class="row"><label>关键位前止盈一半</label>
+          <label class="hint"><input type="checkbox" id="rk-sr-partial"> 价格到达对面关键位前，先平掉一部分锁利，剩余继续持有</label></div>
+        <div class="row"><label>止盈一半比例%</label><input type="number" id="rk-sr-partial-frac" min="10" max="90" step="5">
+          <span class="hint">默认 50（平一半），剩余仓位交给阶梯保本</span></div>
+        <div class="row"><label>由模型把关</label>
+          <label class="hint"><input type="checkbox" id="rk-sr-partial-model"> 仅当该关键位模型守住概率够高才执行（弱位可能直接突破，就不止盈一半）</label></div>
+        <div class="row"><label>守住概率门槛%</label><input type="number" id="rk-sr-partial-phold" min="5" max="95" step="5">
+          <span class="hint">默认 55</span></div>
+        <details style="margin-top:6px">
+          <summary class="hint" style="cursor:pointer">高级参数（一般不用改）</summary>
+          <div class="row"><label>止损外延(×ATR)</label><input type="number" id="rk-sr-buffer" step="0.05" min="0.05">
+            <span class="hint">止损藏在区带外缘之外</span></div>
+          <div class="row"><label>止盈提前(×ATR)</label><input type="number" id="rk-sr-tpbuffer" step="0.05" min="0">
+            <span class="hint">止盈提前到对面区带之前</span></div>
+          <div class="row"><label>止损最近%</label><input type="number" id="rk-sr-minsl" step="0.1" min="0.1">
+            <span class="hint">比这更近的关键位视为噪音</span></div>
+          <div class="row"><label>止损最远%</label><input type="number" id="rk-sr-maxsl" step="0.5" min="0.5">
+            <span class="hint">更远时退回固定止损</span></div>
+          <div class="row"><label>止盈最近%</label><input type="number" id="rk-sr-mintp" step="0.1" min="0.1"></div>
+          <div class="row"><label>止盈最远%</label><input type="number" id="rk-sr-maxtp" step="0.5" min="0.5">
+            <span class="hint">更远不设止盈，交给阶梯保本</span></div>
+        </details>
+        <div class="row" style="margin-top:6px"><button class="btn" onclick="saveSR()">保存 S/R 设置</button></div>
+        <div id="rk-sr-msg" class="msg"></div>
+        <div class="hint" style="margin-top:8px">
+          一句话规则：固定止损（初始止损%）始终保留，S/R 只会把止损收得更近、绝不会更远；
+          止盈一半在最近的对面关键位前落袋，全部止盈顺延到更远的关键位；
+          找不到合适的关键位就退回固定止损、不挂止盈。保存后 Runner 立即热更新。
+          当前关键位请在「总览」页的实时 K 线图上查看。
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ 手动交易 ═══ -->
+  <section id="tab-manual" class="tab">
+    <div class="card" style="max-width:560px">
+      <h3>手动下单</h3>
+      <div class="row"><label>品种</label><input type="text" id="mn-symbol" list="mt5-symbol-list" autocomplete="off" placeholder="ETHUSD_" value="ETHUSD_"></div>
+      <div class="row"><label>手数</label><input type="number" id="mn-lot" value="0.01" step="0.01" min="0.01"></div>
+      <div class="row">
+        <button class="btn ghost" onclick="checkOrder('BUY')">检查买单</button>
+        <button class="btn ghost" onclick="checkOrder('SELL')">检查卖单</button>
+      </div>
+      <div class="row">
+        <button class="btn green" onclick="manualOrder('BUY')">市价买入</button>
+        <button class="btn danger" onclick="manualOrder('SELL')">市价卖出</button>
+        <button class="btn ghost" onclick="manualOrder('CLOSE_ALL')">全部平仓</button>
+      </div>
+      <div id="mn-msg" class="msg"></div>
+      <div class="hint">“检查买单/卖单”只调用 MT5 order_check，不会成交；市价按钮会在确认后真实发单。</div>
+    </div>
+  </section>
+
+  <!-- ═══ 历史成交 ═══ -->
+  <section id="tab-history" class="tab">
+    <div class="card" style="margin-bottom:14px">
+      <h3>已平仓交易</h3>
+      <div class="row"><label>范围</label>
+        <select id="hs-days">
+          <option value="1">最近 1 天</option>
+          <option value="7" selected>最近 7 天</option>
+          <option value="30">最近 30 天</option>
+          <option value="90">最近 90 天</option>
+        </select>
+        <button class="btn small" onclick="loadHistory()">刷新</button>
+        <span id="hs-meta" class="hint"></span></div>
+      <div id="hs-closed"><div class="hint">加载中…</div></div>
+    </div>
+    <div class="card">
+      <h3>持仓中的建仓记录（尚无平仓成交）</h3>
+      <div id="hs-open"><div class="hint">加载中…</div></div>
+      <div class="hint" style="margin-top:8px">数据直接来自 MT5 成交流水（history_deals），含手续费与库存费，按仓位号归并；时间为本地时间（已按服务器时区换算）。</div>
+    </div>
+    <div class="card" style="margin-top:14px">
+      <h3>账户净值走势（每 60 秒记一个点）</h3>
+      <canvas id="eq-chart" width="600" height="160" style="width:100%;height:160px;background:var(--panel2);border:1px solid var(--border);border-radius:6px"></canvas>
+      <div id="eq-chart-meta" class="hint" style="margin-top:4px">页面开着就会持续积累数据（看板重启后从零开始）。</div>
+    </div>
+  </section>
+
+  <!-- ═══ 日志 ═══ -->
+  <section id="tab-logs" class="tab">
+    <div class="card">
+      <h3>日志</h3>
+      <div class="row" style="flex-wrap:wrap">
+        <select id="lg-source" onchange="loadLogView()">
+          <option value="runner" selected>Runner 日志</option>
+          <option value="dashboard">看板日志</option>
+        </select>
+        <button class="btn small" onclick="loadLogView()">刷新</button>
+        <label class="hint"><input type="checkbox" id="lg-auto" checked> 自动刷新</label>
+        <button class="btn small ghost" onclick="exportLog()">导出 .log 文件</button>
+        <button class="btn small danger" onclick="clearLog()">清空当前日志</button>
+      </div>
+      <pre class="log" id="lg-view" style="margin-top:8px">暂无日志</pre>
+      <div id="lg-msg" class="msg"></div>
+      <div class="hint" style="margin-top:6px">Runner 日志 = 信号/风控/下单动作；看板日志 = 服务与手动操作记录。清空只影响显示文件，新日志会从头继续写，不影响运行；导出的是完整日志文件。</div>
+    </div>
+  </section>
+</main>
+
+<div id="overlay">
+  <div class="box">
+    <h3 id="ov-title">确认</h3>
+    <p id="ov-text"></p>
+    <div id="ov-inputs" style="display:none"></div>
+    <div class="row" style="justify-content:flex-end">
+      <button class="btn ghost" onclick="hideOverlay()">取消</button>
+      <button class="btn danger" id="ov-ok">确认执行</button>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+// ── 基础工具 ──────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+async function api(path, opts) {
+  const res = await fetch(path, Object.assign({
+    headers: { "Content-Type": "application/json" }
+  }, opts || {}));
+  let data = null;
+  try { data = await res.json(); } catch (e) { /* ignore */ }
+  if (!res.ok) throw new Error((data && data.detail) || ("HTTP " + res.status));
+  return data;
+}
+function showMsg(id, text, ok) {
+  const el = $(id);
+  el.textContent = text;
+  el.className = "msg " + (ok ? "ok" : "err");
+  setTimeout(() => { el.className = "msg"; }, 6000);
+}
+function fmtDir(d) {
+  return d === "LONG" ? '<span class="long">做多</span>'
+    : d === "SHORT" ? '<span class="short">做空</span>'
+    : '<span class="flat">观望</span>';
+}
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g,
+    c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+// 服务器时区偏移（秒）：MT5 的 K线/成交时间是"服务器墙上时钟"伪时间戳，
+// 减去偏移才是真实 UTC，再按本地时区显示。
+function serverOff() { return window.__srvOff || 0; }
+function tsToStr(ts) {
+  if (!ts) return "—";
+  const d = new Date((ts - serverOff()) * 1000);
+  return d.toLocaleString("zh-CN", { hour12: false });
+}
+// 配置里的策略路径在 Windows 上是反斜杠，统一取文件名显示
+function fileName(p) {
+  return String(p == null ? "" : p).replace(/\\/g, "/").split("/").pop();
+}
+
+// ── 折线图（原生 canvas，无外部库）────────────────────────
+function drawLineChart(canvas, points, opts) {
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  const dpr = window.devicePixelRatio || 1;
+  // 高度只认 CSS（style 固定 px），否则 canvas.height 会被 dpr 逐帧放大导致图越拉越长
+  const w = canvas.clientWidth || 600;
+  const h = canvas.clientHeight || 160;
+  const pw = Math.round(w * dpr), ph = Math.round(h * dpr);
+  if (canvas.width !== pw || canvas.height !== ph) { canvas.width = pw; canvas.height = ph; }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  const color = (opts && opts.color) || "#2ecc71";
+  const fmt = (opts && opts.fmt) || (v => String(v));
+  if (!points || points.length < 2) {
+    ctx.fillStyle = "#8a98a8";
+    ctx.font = "12px 'Microsoft YaHei'";
+    ctx.fillText("数据积累中（至少需要两个采样点）", 12, h / 2);
+    return;
+  }
+  const xs = points.map(p => p[0]), ys = points.map(p => p[1]);
+  let lo = Math.min.apply(null, ys), hi = Math.max.apply(null, ys);
+  if (hi - lo < 1e-9) { hi += 1; lo -= 1; }
+  const pad = (hi - lo) * 0.12; lo -= pad; hi += pad;
+  const x0 = xs[0], x1 = xs[xs.length - 1];
+  const px = t => 44 + (t - x0) / ((x1 - x0) || 1) * (w - 58);
+  const py = v => 10 + (1 - (v - lo) / (hi - lo)) * (h - 30);
+  // 网格与 Y 轴刻度
+  ctx.strokeStyle = "#2d3948"; ctx.fillStyle = "#8a98a8";
+  ctx.font = "10px Consolas";
+  for (let i = 0; i <= 3; i++) {
+    const v = lo + (hi - lo) * i / 3, y = py(v);
+    ctx.beginPath(); ctx.moveTo(44, y); ctx.lineTo(w - 8, y); ctx.stroke();
+    ctx.fillText(fmt(v), 4, y + 3);
+  }
+  // 面积 + 折线
+  const fill = (opts && opts.fill) || "rgba(46,204,113,0.10)";
+  ctx.beginPath();
+  points.forEach((p, i) => { const X = px(p[0]), Y = py(p[1]); i ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y); });
+  const lastX = px(x1), lastY = py(ys[ys.length - 1]);
+  ctx.strokeStyle = color; ctx.lineWidth = 1.6; ctx.stroke();
+  ctx.lineTo(lastX, h - 20); ctx.lineTo(px(x0), h - 20); ctx.closePath();
+  ctx.fillStyle = fill;
+  ctx.fill();
+  ctx.beginPath(); ctx.arc(lastX, lastY, 3, 0, Math.PI * 2);
+  ctx.fillStyle = color; ctx.fill();
+  ctx.fillStyle = "#d8e1ea"; ctx.font = "11px Consolas";
+  ctx.fillText(fmt(ys[ys.length - 1]), Math.min(lastX + 6, w - 60), lastY - 6);
+}
+
+// ── 二次确认弹窗 ──────────────────────────────────────────
+let _confirmCb = null;
+let _confirmInputs = null;
+function askConfirm(title, text, cb, inputs) {
+  $("ov-title").textContent = title;
+  $("ov-text").textContent = text;
+  const box = $("ov-inputs");
+  box.innerHTML = "";
+  _confirmInputs = null;
+  (inputs || []).forEach(it => {
+    const row = document.createElement("div");
+    row.className = "row";
+    const lab = document.createElement("label");
+    lab.textContent = it.label;
+    const inp = document.createElement("input");
+    inp.type = "number"; inp.step = it.step || "any";
+    inp.id = "ov-in-" + it.key;
+    inp.value = it.value != null ? it.value : "";
+    row.appendChild(lab); row.appendChild(inp);
+    box.appendChild(row);
+  });
+  if (inputs && inputs.length) {
+    box.style.display = "block";
+    _confirmInputs = inputs;
+  } else {
+    box.style.display = "none";
+  }
+  _confirmCb = cb;
+  $("overlay").style.display = "flex";
+}
+function hideOverlay() { $("overlay").style.display = "none"; _confirmCb = null; _confirmInputs = null; }
+$("ov-ok").onclick = () => {
+  const cb = _confirmCb, inputs = _confirmInputs;
+  hideOverlay();
+  if (!cb) return;
+  if (inputs && inputs.length) {
+    const vals = {};
+    inputs.forEach(it => { vals[it.key] = parseFloat($("ov-in-" + it.key).value); });
+    cb(vals);
+  } else {
+    cb();
+  }
+};
+
+// ── 标签页切换 ────────────────────────────────────────────
+document.querySelectorAll("nav button").forEach(btn => {
+  btn.onclick = () => {
+    document.querySelectorAll("nav button").forEach(b => b.classList.remove("active"));
+    document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+    btn.classList.add("active");
+    $("tab-" + btn.dataset.tab).classList.add("active");
+    if (btn.dataset.tab === "strategies") loadStrategies();
+    if (btn.dataset.tab === "training") { loadDataFiles(); pollTraining(); }
+    if (btn.dataset.tab === "backtest") { loadDataFiles(); loadStrategyDropdowns(); pollBacktest(); loadBacktestReport(); }
+    if (btn.dataset.tab === "history") loadHistory();
+    if (btn.dataset.tab === "logs") loadLogView();
+  };
+});
+
+// ── 总览轮询 ──────────────────────────────────────────────
+let lastStatus = null;
+async function refreshStatus() {
+  let st;
+  try { st = await api("/api/status"); }
+  catch (e) {
+    $("hdr-runner").textContent = "服务未运行"; $("hdr-runner").className = "pill bad";
+    return;
+  }
+  lastStatus = st;
+  window.__srvOff = st.server_offset_sec != null ? st.server_offset_sec
+    : (st.runner_status && st.runner_status.server_offset_sec) || 0;
+  const runnerOn = st.runner_alive;
+  $("hdr-runner").textContent = runnerOn ? "Runner 运行中" : "Runner 已停止";
+  $("hdr-runner").className = "pill " + (runnerOn ? "ok" : "gray");
+  const dry = st.config && st.config.dry_run !== false;
+  $("hdr-mode").textContent = dry ? "dry-run 演练" : "真实下单";
+  $("hdr-mode").className = "pill " + (dry ? "warn" : "bad");
+  if (st.account) {
+    $("hdr-mt5").textContent = "MT5 已连接";
+    $("hdr-mt5").className = "pill ok";
+    $("ov-account").innerHTML =
+      "<div class='kv'><span class='k'>账号</span><span>" + esc(st.account.login) + "</span></div>" +
+      "<div class='kv'><span class='k'>服务器</span><span>" + esc(st.account.server) + "</span></div>" +
+      "<div class='kv'><span class='k'>余额</span><span>" + st.account.balance + " " + esc(st.account.currency) + "</span></div>" +
+      "<div class='kv'><span class='k'>净值</span><span>" + st.account.equity + "</span></div>" +
+      "<div class='kv'><span class='k'>可用保证金</span><span>" + st.account.margin_free + "</span></div>";
+  } else {
+    $("hdr-mt5").textContent = "MT5 未连接";
+    $("hdr-mt5").className = "pill bad";
+    $("ov-account").innerHTML = "<div class='hint'>" + esc(st.mt5_error || "MT5 未连接") + "</div>";
+  }
+  const rs = st.runner_status || {};
+  // MT5 终端的“算法交易/AutoTrading”开关：关闭时真实下单会被 MT5 拒绝（retcode 10027）
+  const autoTrade = st.trade_allowed;
+  const badge = $("hdr-autotrade");
+  if (autoTrade === false) {
+    badge.style.display = "";
+    badge.textContent = "MT5 算法交易未开启";
+    badge.className = "pill bad";
+  } else if (autoTrade === true) {
+    badge.style.display = "";
+    badge.textContent = "MT5 算法交易已开启";
+    badge.className = "pill ok";
+  } else {
+    badge.style.display = "none";
+  }
+  const autoWarn = (autoTrade === false && !dry)
+    ? "<div class='danger-note'>MT5 终端的“算法交易/AutoTrading”未开启，真实下单会被 MT5 拒绝（retcode 10027）。请在 MT5 工具栏点亮该按钮。</div>"
+    : "";
+  $("ov-runner").innerHTML = (runnerOn
+    ? "<div class='kv'><span class='k'>状态</span><span style='color:var(--green)'>运行中</span></div>" +
+      "<div class='kv'><span class='k'>启动于</span><span>" + esc(rs.started_at || "—") + "</span></div>" +
+      "<div class='kv'><span class='k'>最近循环</span><span>" + esc(rs.last_loop || "—") + "</span></div>" +
+      "<div class='kv'><span class='k'>循环次数</span><span>" + (rs.loop_count || 0) + "</span></div>" +
+      (rs.last_error ? "<div class='kv'><span class='k'>最近错误</span><span style='color:var(--red)'>" + esc(rs.last_error) + "</span></div>" : "")
+    : "<div class='hint'>Runner 未运行。到「交易控制」页启动。<br>模式：" + (dry ? "dry-run 演练（不发真实订单）" : "真实下单") + "</div>") + autoWarn;
+  // 信号
+  const sig = rs.signals || {};
+  const syms = Object.keys(sig);
+  $("ov-signals").innerHTML = st.config && st.config.bindings && st.config.bindings.length
+    ? st.config.bindings.map(b => {
+        const s = sig[b.symbol];
+        if (!s) return "<tr><td>" + esc(b.symbol) + "</td><td class='hint'>" + esc(fileName(b.strategy_file)) +
+          "</td><td colspan='5' class='hint'>等待首个信号…</td></tr>";
+        const stTxt = s.state === "ok" ? "正常" : "<span style='color:var(--red)'>" + esc(s.state || "—") + " " + esc(s.message || "") + "</span>";
+        return "<tr><td>" + esc(b.symbol) + "</td><td class='hint'>" + esc(fileName(s.strategy)) +
+          "</td><td>" + fmtDir(s.direction) + "</td><td>" + (s.strength != null ? s.strength : "—") +
+          "</td><td>" + (s.position != null ? s.position : "—") + "</td><td>" + tsToStr(s.bar_time) +
+          "</td><td>" + stTxt + "</td></tr>";
+      }).join("")
+    : "<tr><td colspan='7' class='hint'>未绑定策略。到「策略库」页导入并绑定。</td></tr>";
+  // 持仓（与 MT5 实时同步，含手动仓位；列表结构，同品种可有多笔）
+  const posList = rs.positions || [];
+  const profitCls = v => v > 0 ? "long" : (v < 0 ? "short" : "flat");
+  $("ov-positions").innerHTML = posList.length
+    ? posList.map(p => {
+        const sym = p.symbol;
+        const dirTxt = p.direction === "BUY" ? '<span class="long">多</span>' : '<span class="short">空</span>';
+        const isReal = !p.dry_run;
+        const profitTxt = p.profit != null
+          ? "<span class='" + profitCls(p.profit) + "'>" + p.profit.toFixed(2) + (p.profit_pct != null ? "（" + p.profit_pct + "%）" : "") + "</span>"
+          : (p.profit_pct != null ? "<span class='" + profitCls(p.profit_pct) + "'>" + p.profit_pct + "%</span>" : "—");
+        const actions = isReal
+          ? "<button class='btn small danger' onclick=\"closePosition(" + p.ticket + ",'" + esc(sym) + "')\">平仓</button> " +
+            "<button class='btn small ghost' onclick=\"editStop(" + p.ticket + ",'" + esc(sym) + "'," + (p.sl || 0) + "," + (p.current_price || 0) + ",'" + p.direction + "')\">止损</button> " +
+            "<button class='btn small ghost' onclick=\"editTarget(" + p.ticket + ",'" + esc(sym) + "'," + (p.tp || 0) + "," + (p.current_price || 0) + ",'" + p.direction + "')\">止盈</button>"
+          : "<span class='hint'>dry-run 演练</span>";
+        return "<tr><td>" + esc(sym) + "</td><td>" + dirTxt + "</td><td>" + p.volume +
+          "</td><td>" + p.open_price + "</td><td>" + (p.current_price != null ? p.current_price : "—") +
+          "</td><td>" + (p.sl || "—") + "</td><td>" + (p.tp || "—") +
+          "</td><td>" + profitTxt + "</td><td class='hint'>" + esc(p.open_time || "—") +
+          "</td><td>" + (p.dry_run ? "dry-run 模拟" : "MT5 实仓") + "</td><td>" + actions + "</td></tr>";
+      }).join("")
+    : "<tr><td colspan='11' class='hint'>暂无持仓</td></tr>";
+  srChartSyncPosSelector();
+  // 动作
+  const acts = rs.actions || [];
+  $("ov-actions").textContent = acts.length ? acts.slice().reverse().map(a => "[" + a.time + "] " + a.action).join("\n") : "暂无动作";
+  // 控制页按钮状态
+  $("ctl-start").disabled = runnerOn;
+  $("ctl-stop").disabled = !runnerOn;
+  $("ctl-tolive").disabled = !dry;
+  $("ctl-todry").disabled = dry;
+  $("ctl-mode").textContent = dry ? "dry-run 演练" : "真实下单";
+  $("ctl-mode").className = "pill " + (dry ? "warn" : "bad");
+  $("ctl-runner-info").innerHTML = runnerOn
+    ? "PID " + esc(rs.pid) + "，启动于 " + esc(rs.started_at) + "，最近循环 " + esc(rs.last_loop)
+    : "未运行";
+}
+
+// ── 策略库 ────────────────────────────────────────────────
+async function loadStrategies() {
+  let data;
+  try { data = await api("/api/strategies"); }
+  catch (e) { $("st-list").innerHTML = "<span class='hint'>" + esc(e.message) + "</span>"; return; }
+  const rows = data.strategies.map(s => {
+    const score = s.best_score != null ? "<span class='score'>" + s.best_score.toFixed(4) + "</span>" : "—";
+    const err = s.error ? "<div class='hint' style='color:var(--red)'>" + esc(s.error) + "</div>" : "";
+    return "<tr><td>" + esc(s.name) + "</td><td>" + esc(s.symbol) + "</td><td>" + esc(s.timeframe) +
+      "</td><td>" + score + "</td><td class='hint' style='max-width:280px;word-break:break-all'>" + esc(s.formula_decoded || "") + "</td>" +
+      "<td><button class='btn small danger' onclick=\"delStrategy('" + esc(s.name) + "')\">删除</button></td></tr>" + err;
+  }).join("");
+  $("st-list").innerHTML = data.strategies.length
+    ? "<table><thead><tr><th>文件</th><th>品种</th><th>周期</th><th>分数</th><th>公式</th><th></th></tr></thead><tbody>" + rows + "</tbody></table>"
+    : "<div class='hint'>策略库为空。先到「训练」页训练，或把 .json 策略文件放进 strategies 文件夹。</div>";
+  // 绑定列表
+  $("bind-list").innerHTML = (data.bindings || []).length
+    ? data.bindings.map(b => "<tr><td>" + esc(b.symbol) + "</td><td class='hint'>" + esc(fileName(b.strategy_file)) +
+      "</td><td>" + b.lot + "</td><td><button class='btn small danger' onclick=\"unbind('" + esc(b.symbol) + "')\">解绑</button></td></tr>").join("")
+    : "<tr><td colspan='4' class='hint'>未绑定</td></tr>";
+  loadStrategyDropdowns();
+}
+async function loadStrategyDropdowns() {
+  try {
+    const data = await api("/api/strategies");
+    const opts = data.strategies.filter(s => !s.error)
+      .map(s => "<option value='" + esc(s.file) + "'>" + esc(s.name) + " (" + (s.best_score != null ? s.best_score.toFixed(3) : "?") + ")</option>").join("");
+    $("bind-strategy").innerHTML = opts || "<option value=''>（无可用策略）</option>";
+    $("bt-strategy").innerHTML = opts || "<option value=''>（无可用策略）</option>";
+  } catch (e) { /* 下拉刷新失败忽略 */ }
+}
+async function delStrategy(name) {
+  askConfirm("删除策略", "确定删除 " + name + "？（若已绑定会同时解绑）", async () => {
+    try {
+      const r = await api("/api/strategies/delete", { method: "POST", body: JSON.stringify({ name }) });
+      showMsg("st-msg", "已删除 " + (r.deleted || name), true);
+      loadStrategies();
+    } catch (e) { showMsg("st-msg", "删除失败：" + e.message, false); }
+  });
+}
+async function bindStrategy() {
+  const strategy_file = $("bind-strategy").value;
+  const symbol = $("bind-symbol").value.trim();
+  const lot = parseFloat($("bind-lot").value);
+  if (!strategy_file) { showMsg("bind-msg", "没有可用策略", false); return; }
+  if (!symbol) { showMsg("bind-msg", "请填写 MT5 品种名（注意下划线，如 ETHUSD_）", false); return; }
+  try {
+    await api("/api/strategies/bind", { method: "POST", body: JSON.stringify({ strategy_file, symbol, lot }) });
+    showMsg("bind-msg", "已绑定 " + symbol, true);
+    loadStrategies();
+  } catch (e) { showMsg("bind-msg", e.message, false); }
+}
+async function unbind(symbol) {
+  try {
+    await api("/api/strategies/unbind", { method: "POST", body: JSON.stringify({ symbol }) });
+    loadStrategies();
+  } catch (e) { alert(e.message); }
+}
+async function loadSymbols() {
+  try {
+    const data = await api("/api/mt5/symbols");
+    $("symbol-sugg").innerHTML = "可选：" + data.symbols.slice(0, 30).map(esc).join("、");
+  } catch (e) { $("symbol-sugg").textContent = "拉取失败：" + e.message; }
+}
+
+// ── 数据文件 ──────────────────────────────────────────────
+async function loadDataFiles() {
+  try {
+    const data = await api("/api/data/files");
+    $("tr-dir").textContent = data.data_dir;
+    if ($("cfg-datadir") && document.activeElement !== $("cfg-datadir")) {
+      $("cfg-datadir").value = data.data_dir;
+    }
+    const opts = data.files.map(f => "<option value='" + esc(f.path) + "'>" + esc(f.name) + " (" + (f.bars != null ? f.bars.toLocaleString() + "根, " : "") + f.size_mb + "MB, " + f.mtime + ")</option>").join("");
+    $("tr-file").innerHTML = opts || "<option value=''>（目录为空，请先导出或放入 Parquet 数据）</option>";
+    $("bt-file").innerHTML = "<option value=''>（用策略内记录的数据）</option>" + opts;
+    window._trainFiles = data.files || [];
+    updateTrainFileMeta(window._trainFiles);
+  } catch (e) {
+    $("tr-file-meta").innerHTML = "<span style='color:var(--red)'>数据文件列表加载失败：" + esc(e.message) + "</span>";
+  }
+}
+function updateTrainFileMeta(files) {
+  const selected = $("tr-file").value;
+  const f = (files || []).find(x => x.path === selected);
+  if (!f) {
+    $("tr-file-meta").innerHTML = "<span>请选择数据文件</span>";
+    return;
+  }
+  const range = f.start_time && f.end_time ? tsToStr(f.start_time) + " ~ " + tsToStr(f.end_time) : "时间范围未知";
+  $("tr-file-meta").innerHTML = "<span>品种/周期：" + esc(f.name.replace(/\.parquet$/i, "")) + "</span>" +
+    "<span>数据量：" + (f.bars != null ? f.bars.toLocaleString() + " 根" : "未知") + "</span>" +
+    "<span>时间：" + esc(range) + "</span>";
+}
+function setTrainPreset(steps) { $("tr-steps").value = steps; }
+async function exportMt5() {
+  const symbol = $("ex-symbol").value.trim();
+  const bars = parseInt($("ex-bars").value, 10) || 6000;
+  const timeframe = $("ex-tf").value;
+  if (!symbol) { showMsg("tr-msg", "请填写品种", false); return; }
+  try {
+    const r = await api("/api/data/export_mt5", { method: "POST", body: JSON.stringify({ symbol, bars, timeframe }) });
+    showMsg("tr-msg", r.message, true);
+    setTimeout(loadDataFiles, 5000);
+  } catch (e) { showMsg("tr-msg", e.message, false); }
+}
+async function startDirectTraining() {
+  const symbol = $("direct-symbol").value.trim();
+  const steps = parseInt($("direct-steps").value, 10) || 60;
+  const bars = parseInt($("ex-bars").value, 10) || 6000;
+  const timeframe = $("direct-tf").value;
+  if (!symbol) { showMsg("tr-msg", "请填写 MT5 品种", false); return; }
+  if (bars < 800) { showMsg("tr-msg", "K线数量至少 800 根", false); return; }
+  try {
+    await api("/api/training/start", { method: "POST", body: JSON.stringify({ direct_mt5: true, symbol, bars, timeframe, steps, from_scratch: $("tr-scratch").checked }) });
+    showMsg("tr-msg", "已启动：MT5 获取 " + timeframe + " → 保存数据 → 开始训练", true);
+    pollTraining();
+  } catch (e) { showMsg("tr-msg", e.message, false); }
+}
+async function saveDataDir() {
+  const dir = $("cfg-datadir").value.trim();
+  if (!dir) { showMsg("tr-msg", "请填写数据目录", false); return; }
+  try {
+    await api("/api/config", { method: "PUT", body: JSON.stringify({ kline_cache_dir: dir }) });
+    showMsg("tr-msg", "数据目录已保存：" + dir, true);
+    loadDataFiles();
+  } catch (e) { showMsg("tr-msg", e.message, false); }
+}
+async function loadEquityChart() {
+  try {
+    const r = await api("/api/equity/history");
+    const pts = (r.points || []).map(p => [p[0] * 1000, p[1]]);
+    drawLineChart($("eq-chart"), pts, { color: "#2ecc71", fmt: v => v.toFixed(0) });
+    if (pts.length >= 2) {
+      const ys = pts.map(p => p[1]);
+      $("eq-chart-meta").textContent = "采样 " + pts.length + " 点｜期间 " +
+        (Math.min.apply(null, ys)).toFixed(2) + " ~ " + (Math.max.apply(null, ys)).toFixed(2);
+    }
+  } catch (e) { /* 忽略 */ }
+}
+async function loadTrainCurve() {
+  try {
+    const r = await api("/api/training/curve");
+    const pts = (r.points || []).map(p => [p[0], p[1]]);
+    drawLineChart($("tr-chart"), pts, { color: "#4da3ff", fmt: v => v.toFixed(2) });
+    $("tr-chart-meta").textContent = pts.length
+      ? "品种 " + esc(r.symbol) + "｜已记录 " + pts.length + " 个训练步｜当前最优 " + (r.best != null ? r.best : "—")
+      : "暂无训练历史（训练后自动生成 training_history_*.json）";
+  } catch (e) { /* 忽略 */ }
+}
+
+// ── 训练 ──────────────────────────────────────────────────
+async function startTraining() {
+  const data_file = $("tr-file").value;
+  if (!data_file) { showMsg("tr-msg", "请选择数据文件", false); return; }
+  const steps = parseInt($("tr-steps").value, 10) || 0;
+  const from_scratch = $("tr-scratch").checked;
+  try {
+    const r = await api("/api/training/start", { method: "POST", body: JSON.stringify({ data_file, steps, from_scratch }) });
+    showMsg("tr-msg", "训练已启动（完成后策略自动保存到 strategies/）", true);
+  } catch (e) { showMsg("tr-msg", e.message, false); }
+  pollTraining();
+}
+async function stopTraining() {
+  try { await api("/api/training/stop", { method: "POST" }); showMsg("tr-msg", "已停止", true); }
+  catch (e) { showMsg("tr-msg", e.message, false); }
+  pollTraining();
+}
+async function pollTraining() {
+  try {
+    const s = await api("/api/training/status");
+    const p = s.progress || {};
+    let head = s.running ? "训练中（PID 见日志）" : "未运行";
+    if (p.step != null) head += " — 步数 " + p.step + "/" + (p.total || "?");
+    if (p.best != null) head += "，当前最优 " + p.best;
+    if (!s.running && s.exit_code != null) head += "（退出码 " + s.exit_code + (s.exit_code === 0 ? "，成功" : "，失败") + "）";
+    $("tr-progress").innerHTML = "<span>" + esc(head) + "</span><span>" + (p.step != null && p.total ? Math.min(100, Math.round(p.step / p.total * 100)) + "%" : "—") + "</span>";
+    const pct = p.step != null && p.total ? Math.min(100, Math.max(0, p.step / p.total * 100)) : (s.running ? 3 : 0);
+    $("tr-progress-bar").style.width = pct + "%";
+    $("tr-status").textContent = s.running ? "训练进程正在后台运行；可以切换标签页，训练不会中断。" : (s.exit_code === 0 ? "训练已完成。请到「策略库」检查并手动绑定策略。" : "尚未开始训练，或上一次训练已结束。请查看日志了解详情。");
+    $("tr-log").textContent = s.log_tail || "暂无日志";
+    loadTrainCurve();
+  } catch (e) { /* 忽略 */ }
+}
+
+// ── 回测 ──────────────────────────────────────────────────
+async function startBacktest() {
+  const strategy_file = $("bt-strategy").value;
+  if (!strategy_file) { showMsg("bt-msg", "没有可用策略", false); return; }
+  const payload = {
+    strategy_file,
+    data_file: $("bt-file").value,
+    commission: parseFloat($("bt-commission").value) || 0.02,
+    slippage: parseFloat($("bt-slippage").value) || 0.01,
+  };
+  try {
+    await api("/api/backtest/start", { method: "POST", body: JSON.stringify(payload) });
+    showMsg("bt-msg", "回测已启动", true);
+  } catch (e) { showMsg("bt-msg", e.message, false); }
+  pollBacktest();
+}
+async function stopBacktest() {
+  try { await api("/api/backtest/stop", { method: "POST" }); } catch (e) { /* 忽略 */ }
+  pollBacktest();
+}
+async function pollBacktest() {
+  try {
+    const s = await api("/api/backtest/status");
+    let head = s.running ? "回测中…" : "未运行";
+    if (!s.running && s.exit_code != null) head += "（退出码 " + s.exit_code + (s.exit_code === 0 ? "，成功" : "，失败") + "）";
+    $("bt-log").textContent = head + "\n\n" + (s.log_tail || "暂无日志");
+    if (!s.running) loadBacktestReport();
+  } catch (e) { /* 忽略 */ }
+}
+async function loadBacktestReport(explicit) {
+  try {
+    const r = await api("/api/backtest/report");
+    const rep = r.report;
+    if (rep) {
+      const parts = [];
+      for (const sym of Object.keys(rep)) {
+        const d = rep[sym];
+        if (d && typeof d === "object") {
+          parts.push("<b>" + esc(sym) + "</b>：" +
+            "总收益 " + (d.total_return != null ? (d.total_return * 100).toFixed(2) + "%" : "—") +
+            "，Sharpe " + (d.sharpe != null ? d.sharpe : "—") +
+            "，Sortino " + (d.sortino != null ? d.sortino : "—") +
+            "，最大回撤 " + (d.max_drawdown != null ? (d.max_drawdown * 100).toFixed(2) + "%" : "—"));
+        }
+      }
+      $("bt-report").innerHTML = parts.length ? parts.join("<br>") : "报告格式解析中，请直接看回测输出图表";
+    } else if (explicit) {
+      $("bt-report").textContent = "暂无报告（先运行回测）";
+    }
+    $("bt-charts").innerHTML = (r.charts || []).map(n => "<img src='/api/backtest/chart/" + encodeURIComponent(n) + "?t=" + Date.now() + "'>").join("");
+  } catch (e) { if (explicit) $("bt-report").textContent = "加载失败：" + e.message; }
+}
+
+// ── 交易控制 ──────────────────────────────────────────────
+async function startRunner() {
+  try { const r = await api("/api/runner/start", { method: "POST" }); showMsg("ctl-msg", r.message || "已启动", true); }
+  catch (e) { showMsg("ctl-msg", e.message, false); }
+  setTimeout(refreshStatus, 2500);
+}
+async function stopRunner() {
+  askConfirm("停止 Runner", "确定停止自动交易进程？", async () => {
+    try { const r = await api("/api/runner/stop", { method: "POST" }); showMsg("ctl-msg", r.message, true); }
+    catch (e) { showMsg("ctl-msg", e.message, false); }
+    setTimeout(refreshStatus, 2000);
+  });
+}
+function askGoLive() {
+  askConfirm("切换为真实下单",
+    "确认让 Runner 向 MT5 发送真实订单？\n\n· 策略信号将直接开平仓\n· 切换后需重启 Runner 生效\n· 如不确定，请继续保持 dry-run",
+    async () => {
+      showMsg("ctl-msg", "正在保存真实下单模式…", true);
+      try {
+        const result = await api("/api/config", { method: "PUT", body: JSON.stringify({ dry_run: false, confirmed: true }) });
+        showMsg("ctl-msg", "已切换为真实下单模式。请重启 Runner 生效。", true);
+        fillRiskForm(result.config || {});
+        await refreshStatus();
+      } catch (e) { showMsg("ctl-msg", "切换失败：" + e.message, false); }
+    });
+}
+async function setDryRun(dry) {
+  try {
+    const result = await api("/api/config", { method: "PUT", body: JSON.stringify({ dry_run: dry }) });
+    showMsg("ctl-msg", "已回到 dry-run 演练模式。请重启 Runner 生效。", true);
+    fillRiskForm(result.config || {});
+    await refreshStatus();
+  } catch (e) { showMsg("ctl-msg", "切换失败：" + e.message, false); }
+}
+async function saveLimits() {
+  const payload = {
+    min_trade_exposure: parseFloat($("cfg-exposure").value),
+    max_lot_per_trade: parseFloat($("cfg-maxlot").value),
+    max_open_positions: parseInt($("cfg-maxpos").value, 10),
+  };
+  try {
+    await api("/api/config", { method: "PUT", body: JSON.stringify(payload) });
+    showMsg("ctl-msg", "已保存（Runner 运行中会热更新）", true);
+  } catch (e) { showMsg("ctl-msg", e.message, false); }
+}
+
+// ── 风控参数 ──────────────────────────────────────────────
+function addLevel(trigger, lock) {
+  const tb = $("rk-levels");
+  const tr = document.createElement("tr");
+  tr.innerHTML = "<td><input type='number' step='0.005' min='0' value='" + (trigger != null ? trigger : 0.01) + "'></td>" +
+    "<td><input type='number' step='0.005' min='0' value='" + (lock != null ? lock : 0) + "'></td>" +
+    "<td><button class='btn small danger' onclick='this.closest(\"tr\").remove()'>删</button></td>";
+  tb.appendChild(tr);
+}
+async function saveRisk() {
+  const levels = [];
+  document.querySelectorAll("#rk-levels tr").forEach(tr => {
+    const t = parseFloat(tr.children[0].querySelector("input").value);
+    const l = parseFloat(tr.children[1].querySelector("input").value);
+    if (!isNaN(t) && !isNaN(l)) levels.push([t, l]);
+  });
+  levels.sort((a, b) => a[0] - b[0]);
+  const payload = {
+    risk: {
+      enable_price_monitor: $("rk-enabled").checked,
+      price_monitor_interval: parseInt($("rk-interval").value, 10),
+      stop_loss_pct: -(Math.abs(parseFloat($("rk-sl").value) || 2) / 100),
+      breakeven_levels: levels,
+    }
+  };
+  try {
+    await api("/api/config", { method: "PUT", body: JSON.stringify(payload) });
+    showMsg("rk-msg", "风控参数已保存（Runner 运行中会热更新）", true);
+  } catch (e) { showMsg("rk-msg", e.message, false); }
+}
+function fillRiskForm(cfg) {
+  const r = cfg.risk || {};
+  $("rk-enabled").checked = r.enable_price_monitor !== false;
+  $("rk-interval").value = r.price_monitor_interval || 10;
+  $("rk-sl").value = Math.abs((r.stop_loss_pct != null ? r.stop_loss_pct : -0.02) * 100).toFixed(1);
+  $("rk-levels").innerHTML = "";
+  (r.breakeven_levels || [[0.01, 0], [0.02, 0.01], [0.03, 0.02], [0.04, 0.03]])
+    .forEach(l => addLevel(l[0], l[1]));
+  // S/R 优化（%字段按百分比显示）
+  $("rk-sr-enabled").checked = r.sr_enabled !== false;
+  $("rk-sr-partial").checked = r.sr_partial_enabled !== false;
+  $("rk-sr-partial-frac").value = ((r.sr_partial_fraction != null ? r.sr_partial_fraction : 0.5) * 100).toFixed(0);
+  $("rk-sr-partial-model").checked = r.sr_partial_use_model !== false;
+  $("rk-sr-partial-phold").value = ((r.sr_partial_min_phold != null ? r.sr_partial_min_phold : 0.55) * 100).toFixed(0);
+  $("rk-sr-buffer").value = r.sr_buffer_atr != null ? r.sr_buffer_atr : 0.25;
+  $("rk-sr-tpbuffer").value = r.sr_tp_buffer_atr != null ? r.sr_tp_buffer_atr : 0.1;
+  $("rk-sr-minsl").value = ((r.sr_min_sl_pct != null ? r.sr_min_sl_pct : 0.004) * 100).toFixed(1);
+  $("rk-sr-maxsl").value = ((r.sr_max_sl_pct != null ? r.sr_max_sl_pct : 0.03) * 100).toFixed(1);
+  $("rk-sr-mintp").value = ((r.sr_min_tp_pct != null ? r.sr_min_tp_pct : 0.006) * 100).toFixed(1);
+  $("rk-sr-maxtp").value = ((r.sr_max_tp_pct != null ? r.sr_max_tp_pct : 0.06) * 100).toFixed(1);
+  $("cfg-exposure").value = cfg.min_trade_exposure != null ? cfg.min_trade_exposure : 0.05;
+  $("cfg-maxlot").value = cfg.max_lot_per_trade != null ? cfg.max_lot_per_trade : 1.0;
+  $("cfg-maxpos").value = cfg.max_open_positions != null ? cfg.max_open_positions : 3;
+  fillSRSymbolOptions(cfg);
+}
+async function saveSR() {
+  const num = (id, dft) => { const v = parseFloat($(id).value); return isNaN(v) ? dft : v; };
+  const payload = { risk: {
+    sr_enabled: $("rk-sr-enabled").checked,
+    sr_partial_enabled: $("rk-sr-partial").checked,
+    sr_partial_fraction: Math.min(0.9, Math.max(0.1, Math.abs(num("rk-sr-partial-frac", 50)) / 100)),
+    sr_partial_use_model: $("rk-sr-partial-model").checked,
+    sr_partial_min_phold: Math.min(0.95, Math.max(0.05, Math.abs(num("rk-sr-partial-phold", 55)) / 100)),
+    sr_buffer_atr: num("rk-sr-buffer", 0.25),
+    sr_tp_buffer_atr: num("rk-sr-tpbuffer", 0.1),
+    sr_min_sl_pct: Math.abs(num("rk-sr-minsl", 0.4)) / 100,
+    sr_max_sl_pct: Math.abs(num("rk-sr-maxsl", 3)) / 100,
+    sr_min_tp_pct: Math.abs(num("rk-sr-mintp", 0.6)) / 100,
+    sr_max_tp_pct: Math.abs(num("rk-sr-maxtp", 6)) / 100,
+  } };
+  try {
+    await api("/api/config", { method: "PUT", body: JSON.stringify(payload) });
+    showMsg("rk-sr-msg", "S/R 设置已保存（Runner 运行中自动热更新）", true);
+  } catch (e) { showMsg("rk-sr-msg", e.message, false); }
+}
+function fillSRSymbolOptions(cfg) {
+  const inp = $("sr-chart-symbol");
+  if (!inp) return;
+  // 默认值：第一个绑定的品种；品种列表数据源是 MT5 全部品种（datalist 可输入可下拉）
+  if (!inp.value) {
+    const bound = (cfg.bindings || []).map(b => b.symbol).filter(Boolean);
+    inp.value = bound[0] || "ETHUSD_";
+  }
+  if (!window.__mt5SymbolsLoading) {
+    window.__mt5SymbolsLoading = true;
+    api("/api/mt5/symbols").then(r => {
+      const dl = $("mt5-symbol-list");
+      if (!dl) return;
+      dl.innerHTML = "";
+      (r.symbols || []).forEach(s => {
+        const opt = document.createElement("option");
+        opt.value = s;
+        dl.appendChild(opt);
+      });
+    }).catch(() => { /* MT5 未连接时保留空列表，可手动输入 */ })
+      .finally(() => { window.__mt5SymbolsLoading = false; });
+  }
+  if (!srChart.candles.length) loadSRChart();
+}
+
+// ── 实时 K 线与关键位（总览）─────────────────────────────
+const srChart = {
+  candles: [], forming: null, zones: [], meta: {}, trades: [], markers: [],
+  barsVis: 120, viewEnd: null,   // viewEnd=null 跟随最新；否则为最右可见 bar 索引
+  hover: null, drag: null, lineDrag: null, loading: false, layout: null,
+};
+function srChartBarSec() {
+  return { M1: 60, M5: 300, M15: 900, M30: 1800, H1: 3600, H4: 14400, D1: 86400 }[
+    $("sr-chart-tf") ? $("sr-chart-tf").value : "H1"] || 3600;
+}
+function srChartAll() { return srChart.forming ? srChart.candles.concat([srChart.forming]) : srChart.candles; }
+function srChartPad(n) { return (n < 10 ? "0" : "") + n; }
+function srChartFmt(ts) {
+  const d = new Date((ts - (window.__srvOff || 0)) * 1000);
+  return d.getFullYear() + "-" + srChartPad(d.getMonth() + 1) + "-" + srChartPad(d.getDate()) +
+    " " + srChartPad(d.getHours()) + ":" + srChartPad(d.getMinutes());
+}
+function srChartDec(p) {
+  const a = Math.abs(Number(p) || 1);
+  return a >= 1000 ? 1 : a >= 10 ? 2 : a >= 1 ? 3 : 5;
+}
+function srChartPositionsList() {
+  const sym = $("sr-chart-symbol") ? $("sr-chart-symbol").value : "";
+  return ((typeof lastStatus !== "undefined" && lastStatus &&
+           lastStatus.runner_status && lastStatus.runner_status.positions) || [])
+    .filter(p => p.symbol === sym);
+}
+function srChartPosition() {
+  const list = srChartPositionsList();
+  if (!list.length) return null;
+  if (srChart.posTicket) {
+    const sel = list.find(p => String(p.ticket) === String(srChart.posTicket));
+    if (sel) return sel;
+  }
+  return list[0];
+}
+function srChartSyncPosSelector() {
+  const sel = $("sr-chart-pos"), lab = $("sr-chart-pos-label");
+  if (!sel) return;
+  const list = srChartPositionsList();
+  const key = list.map(p => p.ticket).join(",");
+  if (sel.dataset.key === key) return;
+  sel.dataset.key = key;
+  if (list.length <= 1) {
+    sel.style.display = "none"; lab.style.display = "none";
+    srChart.posTicket = null;
+    return;
+  }
+  sel.innerHTML = "";
+  list.forEach(p => {
+    const opt = document.createElement("option");
+    opt.value = p.ticket;
+    opt.textContent = "#" + p.ticket + " " + (p.direction === "BUY" ? "多" : "空") +
+      " " + p.volume + "手" + (p.sr_partial && !p.sr_partial.done ? "（含止盈一半）" : "");
+    sel.appendChild(opt);
+  });
+  if (srChart.posTicket && list.some(p => String(p.ticket) === String(srChart.posTicket))) {
+    sel.value = srChart.posTicket;
+  } else {
+    srChart.posTicket = list[0].ticket;
+  }
+  sel.style.display = ""; lab.style.display = "";
+}
+async function loadSRChart(silent) {
+  const inp = $("sr-chart-symbol");
+  if (!inp) return;
+  const symbol = inp.value.trim();
+  if (!symbol) { $("sr-chart-meta").textContent = "请先输入品种（可从下拉列表选 MT5 全部品种）。"; return; }
+  const tf = $("sr-chart-tf").value;
+  if (srChart.loading) return;
+  srChart.loading = true;
+  if (srChart.loadedForSymbol !== symbol) {
+    srChart.posTicket = null;          // 品种变了，重置仓位选择
+    srChart.loadedForSymbol = symbol;
+  }
+  try {
+    const [r, hist] = await Promise.all([
+      api("/api/sr/chart?symbol=" + encodeURIComponent(symbol) +
+        "&timeframe=" + tf + "&bars=300"),
+      api("/api/mt5/history?days=7").catch(() => null),
+    ]);
+    srChart.candles = r.candles || [];
+    srChart.forming = r.forming || null;
+    srChart.zones = r.zones || [];
+    srChart.meta = r.info || {};
+    const mine = hist && (hist.closed || []).concat(hist.open || []) || [];
+    srChart.trades = mine.filter(t => t.symbol === symbol);
+    srChart.viewEnd = null;   // 刷新后回到跟随最新
+    const meta = $("sr-chart-meta");
+    if (srChart.meta.error) {
+      meta.textContent = srChart.meta.error;
+    } else {
+      const atr = srChart.meta.atr != null
+        ? Number(srChart.meta.atr).toFixed(srChartDec(srChart.meta.atr)) : "?";
+      meta.textContent = symbol + " " + tf + " · 最新收盘 " + srChart.meta.price +
+        " · ATR " + atr +
+        (r.sr_enabled ? " · 自动交易已启用 S/R 优化" : " · 自动交易未启用 S/R 优化");
+    }
+    renderSRChartLegend();
+    drawSRChart();
+  } catch (e) {
+    if (!silent) $("sr-chart-meta").textContent = "加载失败：" + e.message;
+  } finally { srChart.loading = false; }
+}
+function renderSRChartLegend() {
+  const box = $("sr-chart-legend");
+  if (!box) return;
+  if (srChart.meta.error) { box.textContent = ""; return; }
+  const rows = (srChart.zones || []).map(z =>
+    "<div>· " + z.label + " <strong>" + z.center + "</strong>（" + z.low + " ~ " + z.high +
+    "，距现价 " + z.dist_atr + " ATR，被测 " + z.n_events + " 次" +
+    (z.p_hold != null ? "，守住 " + Math.round(z.p_hold * 100) + "%" : "") + "）</div>");
+  box.innerHTML = rows.length ? rows.join("") : "距离带内暂无关键位。";
+}
+function drawSRChart() {
+  const cv = $("sr-chart");
+  if (!cv) return;
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = cv.clientWidth || 800, cssH = 420;
+  const pxW = Math.round(cssW * dpr), pxH = Math.round(cssH * dpr);
+  if (cv.width !== pxW || cv.height !== pxH) { cv.width = pxW; cv.height = pxH; }
+  const ctx = cv.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cssW, cssH);
+  const all = srChartAll();
+  const n = all.length;
+  if (!n) {
+    ctx.fillStyle = "#9aa4b2"; ctx.font = "13px system-ui, sans-serif";
+    ctx.fillText("暂无数据", 20, 30);
+    return;
+  }
+  const padL = 8, padR = 70, padT = 12, padB = 24;
+  const plotW = cssW - padL - padR, plotH = cssH - padT - padB;
+  const barsVis = Math.max(20, Math.min(srChart.barsVis, n));
+  const end = srChart.viewEnd == null ? n : Math.max(barsVis, Math.min(srChart.viewEnd, n));
+  const start = end - barsVis;
+  // 纵向范围只由可见 K 线决定：止损/止盈/关键位不参与（否则小周期下 K 线会被压扁）
+  const vis = all.slice(start, end);
+  let lo = Infinity, hi = -Infinity;
+  vis.forEach(c => { lo = Math.min(lo, c[3]); hi = Math.max(hi, c[2]); });
+  const pos = srChartPosition();
+  // 止损/止盈/止盈一半线（未设置时画一个半透明的"拖动把手"在合理默认位，拖动落下才真正提交）
+  let slV = 0, tpV = 0, partialV = null, slDim = false, tpDim = false;
+  if (pos) {
+    const isBuy = pos.direction === "BUY";
+    const off = Math.max(Math.abs(pos.open_price) * 0.005,
+      Math.abs(Number(srChart.meta.atr) || 0) * 2);
+    slV = pos.sl > 0 ? pos.sl : (isBuy ? pos.open_price - off : pos.open_price + off);
+    tpV = pos.tp > 0 ? pos.tp : (isBuy ? pos.open_price + off : pos.open_price - off);
+    slDim = !(pos.sl > 0); tpDim = !(pos.tp > 0);
+    partialV = pos.sr_partial && !pos.sr_partial.done ? pos.sr_partial.price : null;
+    if (srChart.lineDrag) {
+      if (srChart.lineDrag.which === "sl") { slV = srChart.lineDrag.price; slDim = false; }
+      if (srChart.lineDrag.which === "tp") { tpV = srChart.lineDrag.price; tpDim = false; }
+      if (srChart.lineDrag.which === "partial") { partialV = srChart.lineDrag.price; }
+    }
+  }
+  const posLines = pos ? [
+    ["开仓价", pos.open_price, "#4c8dff", [], null, false],
+    ["止损" + (slDim ? "（未设 · 拖动设置）" : ""), slV, "#ef5350", [5, 4], "sl", slDim],
+    ["止盈" + (tpDim ? "（未设 · 拖动设置）" : ""), tpV, "#26a69a", [5, 4], "tp", tpDim],
+    ["止盈一半", partialV, "#ff9800", [3, 3], "partial", false],
+  ] : [];
+  if (!isFinite(lo) || !isFinite(hi)) return;
+  if (hi - lo < 1e-12) hi = lo + Math.abs(lo) * 0.001 + 1e-9;
+  const padP = (hi - lo) * 0.08; lo -= padP; hi += padP;
+  const dec = srChartDec((lo + hi) / 2);
+  const xOf = i => padL + (i - start + 0.5) * (plotW / barsVis);
+  const yOf = p => padT + (hi - p) / (hi - lo) * plotH;
+  const cw = Math.max(1.5, (plotW / barsVis) * 0.66);
+  srChart.layout = { padL, padR, padT, plotW, plotH, start, end, barsVis, lo, hi, n };
+  ctx.font = "11px system-ui, sans-serif";
+  // 网格 + 价格轴
+  for (let g = 0; g <= 5; g++) {
+    const p = lo + (hi - lo) * g / 5, y = yOf(p);
+    ctx.strokeStyle = "rgba(128,128,128,.14)";
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
+    ctx.fillStyle = "#9aa4b2"; ctx.textAlign = "left";
+    ctx.fillText(p.toFixed(dec), padL + plotW + 6, y + 4);
+  }
+  // 时间轴
+  ctx.textAlign = "center"; ctx.fillStyle = "#9aa4b2";
+  const tstep = Math.max(1, Math.floor(barsVis / 6));
+  for (let i = start + Math.floor(tstep / 2); i < end; i += tstep) {
+    ctx.fillText(srChartFmt(all[i][0]), xOf(i), cssH - 7);
+  }
+  // 关键位区带（先画，蜡烛覆盖其上；完全在视野外的区带不画）
+  for (const z of srChart.zones) {
+    if (z.high < lo || z.low > hi) continue;
+    const yH = yOf(z.high), yL = yOf(z.low);
+    const sup = z.kind === "support";
+    ctx.fillStyle = sup ? "rgba(38,166,154,.13)" : "rgba(239,83,80,.13)";
+    ctx.fillRect(padL, yH, plotW, Math.max(2, yL - yH));
+    const yc = yOf(z.center);
+    ctx.strokeStyle = sup ? "rgba(38,166,154,.55)" : "rgba(239,83,80,.55)";
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath(); ctx.moveTo(padL, yc); ctx.lineTo(padL + plotW, yc); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = sup ? "#2bbbad" : "#ef5350"; ctx.textAlign = "left";
+    const ly = yH - 4 > padT + 10 ? yH - 4 : Math.max(padT + 10, yL + 12);
+    ctx.fillText((sup ? "支撑 " : "压力 ") + z.center, padL + 4, ly);
+  }
+  // 蜡烛
+  for (let i = start; i < end; i++) {
+    const c = all[i], o = c[1], h = c[2], l = c[3], cl = c[4];
+    const x = xOf(i), up = cl >= o;
+    const col = up ? "#26a69a" : "#ef5350";
+    ctx.strokeStyle = col; ctx.fillStyle = col;
+    ctx.beginPath(); ctx.moveTo(x, yOf(h)); ctx.lineTo(x, yOf(l)); ctx.stroke();
+    const yo = yOf(o), yc2 = yOf(cl);
+    ctx.fillRect(x - cw / 2, Math.min(yo, yc2), cw, Math.max(1, Math.abs(yc2 - yo)));
+  }
+  // 形成中的当前 bar（白色描边标记）
+  if (srChart.forming) {
+    const x = xOf(n - 1);
+    const yh = yOf(srChart.forming[2]), yl = yOf(srChart.forming[3]);
+    ctx.strokeStyle = "rgba(255,255,255,.4)";
+    ctx.strokeRect(x - cw / 2 - 1.5, yh - 1.5, cw + 3, Math.max(3, yl - yh) + 3);
+  }
+  // 历史成交标记（▲多入场 / ▼空入场 · 圆点=离场，绿=盈利红=亏损）
+  srChart.markers = [];
+  const barSec = srChartBarSec();
+  const t0 = all[0][0];
+  for (const t of srChart.trades || []) {
+    const fi = (ts) => (ts - t0) / barSec;   // 相对第 0 根 bar 的小数索引
+    const ein = fi(t.open_time);
+    if (ein < -0.5 || ein > n) continue;
+    const xin = padL + (ein - start + 0.5) * (plotW / barsVis);
+    const yin = yOf(t.open_price);
+    if (ein >= start - 1 && ein <= end) {
+      const buy = t.direction === "BUY";
+      const s = 5;
+      ctx.fillStyle = buy ? "#4c8dff" : "#ff9800";
+      ctx.beginPath();
+      if (buy) {
+        ctx.moveTo(xin, yin + s + 3); ctx.lineTo(xin - s, yin + s + 3 + s * 1.6);
+        ctx.lineTo(xin + s, yin + s + 3 + s * 1.6);
+      } else {
+        ctx.moveTo(xin, yin - s - 3); ctx.lineTo(xin - s, yin - s - 3 - s * 1.6);
+        ctx.lineTo(xin + s, yin - s - 3 - s * 1.6);
+      }
+      ctx.closePath(); ctx.fill();
+      srChart.markers.push({
+        x: xin, y: yin,
+        text: (buy ? "买入开仓 " : "卖出开仓 ") + t.volume + "手 @ " + t.open_price,
+      });
+    }
+    if (t.closed && t.close_price && t.close_time) {
+      const eout = fi(t.close_time);
+      const xout = padL + (eout - start + 0.5) * (plotW / barsVis);
+      const yout = yOf(t.close_price);
+      if (eout >= start - 1 && eout <= end + 1) {
+        // 入场→离场连线
+        ctx.strokeStyle = "rgba(255,255,255,.16)";
+        ctx.beginPath(); ctx.moveTo(xin, yin); ctx.lineTo(xout, yout); ctx.stroke();
+        const win = (t.profit || 0) >= 0;
+        ctx.fillStyle = win ? "#26a69a" : "#ef5350";
+        ctx.beginPath(); ctx.arc(xout, yout, 4, 0, Math.PI * 2); ctx.fill();
+        srChart.markers.push({
+          x: xout, y: yout,
+          text: "平仓 " + (t.profit >= 0 ? "+" : "") + t.profit + " USD",
+        });
+      }
+    }
+  }
+  // 持仓相关横线 + 右侧标签（sl/tp 可拖动；出视野的线在上下边缘显示箭头标签）
+  ctx.textAlign = "left";
+  srChart.layout.lines = [];
+  posLines.forEach(l => {
+    const [label, val, color, dash, which, dim] = l;
+    if (!(val > 0)) return;
+    const y = yOf(val);
+    const yTop = padT, yBot = padT + plotH;
+    if (y < yTop || y > yBot) {
+      // 出视野：只画边缘箭头 + 标签（不可拖；缩放/平移进入视野后可拖）
+      const ey = y < yTop ? yTop + 7 : yBot - 7;
+      ctx.globalAlpha = dim ? 0.55 : 1;
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      if (y < yTop) {
+        ctx.moveTo(padL + plotW - 46, ey + 6); ctx.lineTo(padL + plotW - 40, ey);
+        ctx.lineTo(padL + plotW - 34, ey + 6);
+      } else {
+        ctx.moveTo(padL + plotW - 46, ey - 6); ctx.lineTo(padL + plotW - 40, ey);
+        ctx.lineTo(padL + plotW - 34, ey - 6);
+      }
+      ctx.closePath(); ctx.fill();
+      ctx.textAlign = "right";
+      ctx.fillText((y < yTop ? "↑ " : "↓ ") + label + " " + val.toFixed(dec),
+        padL + plotW - 50, ey + 4);
+      ctx.textAlign = "left";
+      ctx.globalAlpha = 1;
+      return;
+    }
+    if (which) srChart.layout.lines.push({ which, val, y });
+    ctx.globalAlpha = dim ? 0.55 : 1;
+    ctx.strokeStyle = color; ctx.setLineDash(dash);
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = color;
+    ctx.fillText(label + " " + val.toFixed(dec), padL + plotW - 92, y - 4);
+    ctx.globalAlpha = 1;
+  });
+  // 现价线
+  const lastP = all[n - 1][4];
+  const yl2 = yOf(lastP);
+  ctx.strokeStyle = "rgba(255,255,255,.45)"; ctx.setLineDash([2, 3]);
+  ctx.beginPath(); ctx.moveTo(padL, yl2); ctx.lineTo(padL + plotW, yl2); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = "rgba(255,255,255,.85)";
+  ctx.fillRect(padL + plotW + 2, yl2 - 9, padR - 8, 18);
+  ctx.fillStyle = "#111"; ctx.textAlign = "left";
+  ctx.fillText(lastP.toFixed(dec), padL + plotW + 6, yl2 + 4);
+  // 十字光标
+  if (srChart.hover && !srChart.drag) {
+    const { x, y } = srChart.hover;
+    if (x >= padL && x <= padL + plotW) {
+      ctx.strokeStyle = "rgba(255,255,255,.25)"; ctx.setLineDash([3, 3]);
+      ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, padT + plotH); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
+}
+function srChartTooltip() {
+  const cv = $("sr-chart"), tip = $("sr-chart-tip");
+  if (!cv || !tip || !srChart.hover || !srChart.layout) { if (tip) tip.style.display = "none"; return; }
+  const L = srChart.layout, { x, y } = srChart.hover;
+  if (x < L.padL || x > L.padL + L.plotW) { tip.style.display = "none"; return; }
+  const idx = L.start + Math.floor((x - L.padL) / (L.plotW / L.barsVis));
+  const all = srChartAll();
+  if (idx < 0 || idx >= L.n) { tip.style.display = "none"; return; }
+  const c = all[idx];
+  const price = L.hi - (y - L.padT) / L.plotH * (L.hi - L.lo);
+  const dec = srChartDec(price);
+  let text = srChartFmt(c[0]) + (idx === L.n - 1 && srChart.forming ? "（当前bar）" : "") +
+    "\n开 " + c[1].toFixed(dec) + "  高 " + c[2].toFixed(dec) +
+    "\n低 " + c[3].toFixed(dec) + "  收 " + c[4].toFixed(dec);
+  // 就近的历史成交标记
+  let best = null, bestD = 10;
+  for (const m of (srChart.markers || [])) {
+    const d = Math.abs(m.x - x) + Math.abs(m.y - y);
+    if (d < bestD) { bestD = d; best = m; }
+  }
+  if (best) text += "\n" + best.text;
+  for (const z of srChart.zones) {
+    if (price >= z.low && price <= z.high) {
+      text += "\n" + z.label + " " + z.center +
+        (z.p_hold != null ? "（守住 " + Math.round(z.p_hold * 100) + "%）" : "");
+      break;
+    }
+  }
+  tip.textContent = text;
+  tip.style.display = "block";
+  const tw = tip.offsetWidth, th = tip.offsetHeight;
+  const px = x + 14 + tw > cv.clientWidth ? x - tw - 10 : x + 14;
+  tip.style.left = px + "px";
+  tip.style.top = Math.max(4, y - th - 12) + "px";
+}
+function srChartHitLine(x, y) {
+  const L = srChart.layout;
+  if (!L || !L.lines) return null;
+  for (const ln of L.lines) {
+    if (Math.abs(y - ln.y) <= 6) return ln;
+  }
+  return null;
+}
+function srChartPriceAt(y) {
+  const L = srChart.layout;
+  if (!L) return 0;
+  const p = L.hi - (y - L.padT) / L.plotH * (L.hi - L.lo);
+  return Math.max(L.lo, Math.min(L.hi, p));
+}
+async function srChartCommitLine(which, price) {
+  const pos = srChartPosition();
+  if (!pos) return;
+  const dec = srChartDec(price);
+  const val = Number(price.toFixed(dec));
+  const dirTxt = pos.direction === "BUY" ? "多" : "空";
+  const posHead = "仓位：#" + pos.ticket + " " + pos.symbol + " " + dirTxt + " " + pos.volume +
+    "手（现价 " + (pos.current_price || "—") + "）";
+
+  // 到价分批平仓（止盈一半）：可拖橙线或直接输入价格与手数
+  if (which === "partial") {
+    const plan = pos.sr_partial && !pos.sr_partial.done ? pos.sr_partial : null;
+    const defVol = plan && plan.close_volume
+      ? plan.close_volume
+      : Math.round(pos.volume / 2 * 100) / 100;
+    askConfirm("到价分批平仓（止盈一半）",
+      posHead + "\n价格到达设定值时自动平掉指定手数，剩余继续持有。\n" +
+      (plan ? "当前计划：到 " + plan.price + " 平 " + plan.close_volume + "手\n" : "") +
+      "价格填 0 并确认 = 取消该计划。",
+      async v => {
+        const p = v.price, vol = v.volume;
+        if (isNaN(p) || p < 0) { $("sr-chart-meta").textContent = "价格无效"; return; }
+        try {
+          const r = await api("/api/mt5/position/partial", {
+            method: "POST",
+            body: JSON.stringify({ ticket: pos.ticket, price: p, volume: isNaN(vol) ? 0 : vol }),
+          });
+          $("sr-chart-meta").textContent = r.ok ? (r.message || "已设置") : "设置失败：" + (r.message || "");
+          if (r.ok) { loadSRChart(true); refreshStatus(); }
+        } catch (e) { $("sr-chart-meta").textContent = "设置失败：" + e.message; }
+      },
+      [{ key: "price", label: "触发价格", value: val > 0 ? val : (plan ? plan.price : "") },
+       { key: "volume", label: "平仓手数", value: defVol > 0 ? defVol : "" }]);
+    return;
+  }
+
+  const isSl = which === "sl";
+  const label = isSl ? "止损" : "止盈";
+  const cur = isSl ? pos.sl : pos.tp;
+  if (cur > 0 && Math.abs(cur - val) <= Math.abs(cur) * 1e-6) return; // 没动
+  askConfirm("确认修改" + label,
+    posHead + "\n" + label + "：" + (cur > 0 ? cur : "未设置") + " → 可在下方输入框修正价格" +
+    (isSl ? "\n\n手动设置后该仓位止损不再被自动拉回；阶梯保本仍生效。" : ""),
+    async v => {
+      const p = Number(v.price);
+      if (!p || p <= 0) { $("sr-chart-meta").textContent = "价格无效，未修改"; return; }
+      try {
+        const r = await api("/api/mt5/position/" + which, {
+          method: "POST",
+          body: JSON.stringify({ ticket: pos.ticket, [which]: p }),
+        });
+        $("sr-chart-meta").textContent = r.ok
+          ? (r.message || "已修改")
+          : "修改失败：" + (r.message || "未知错误");
+        if (r.ok) { loadSRChart(true); refreshStatus(); }
+      } catch (e) {
+        $("sr-chart-meta").textContent = "修改失败：" + e.message;
+      }
+    },
+    [{ key: "price", label: label + "价格", value: val }]);
+}
+
+function bindSRChartEvents() {
+  const cv = $("sr-chart");
+  if (!cv || cv.dataset.bound) return;
+  cv.dataset.bound = "1";
+  cv.addEventListener("wheel", e => {
+    e.preventDefault();
+    const f = e.deltaY > 0 ? 1.15 : 1 / 1.15;
+    srChart.barsVis = Math.max(20, Math.min(600, Math.round(srChart.barsVis * f)));
+    drawSRChart();
+  }, { passive: false });
+  cv.addEventListener("mousedown", e => {
+    const hit = srChartHitLine(e.offsetX, e.offsetY);
+    if (hit) {
+      srChart.lineDrag = { which: hit.which, price: hit.val };
+      cv.style.cursor = "ns-resize";
+      return;
+    }
+    srChart.drag = { x: e.clientX, end: srChart.viewEnd == null ? srChartAll().length : srChart.viewEnd };
+  });
+  window.addEventListener("mousemove", e => {
+    if (srChart.lineDrag) {
+      const rect = cv.getBoundingClientRect();
+      srChart.lineDrag.price = srChartPriceAt(e.clientY - rect.top);
+      drawSRChart();
+      return;
+    }
+    if (!srChart.drag) return;
+    const rect = cv.getBoundingClientRect();
+    const per = (rect.width - 78) / srChart.barsVis;
+    const dx = e.clientX - srChart.drag.x;
+    const n = srChartAll().length;
+    srChart.viewEnd = Math.max(srChart.barsVis, Math.min(srChart.drag.end - Math.round(dx / per), n));
+    drawSRChart();
+  });
+  window.addEventListener("mouseup", e => {
+    if (srChart.lineDrag) {
+      const ld = srChart.lineDrag;
+      srChart.lineDrag = null;
+      cv.style.cursor = "crosshair";
+      srChartCommitLine(ld.which, ld.price);
+      drawSRChart();
+      return;
+    }
+    srChart.drag = null;
+  });
+  cv.addEventListener("mousemove", e => {
+    srChart.hover = { x: e.offsetX, y: e.offsetY };
+    if (!srChart.lineDrag && !srChart.drag) {
+      const hit = srChartHitLine(e.offsetX, e.offsetY);
+      cv.style.cursor = hit ? "ns-resize" : "crosshair";
+    }
+    drawSRChart();
+    srChartTooltip();
+  });
+  cv.addEventListener("mouseleave", () => {
+    srChart.hover = null;
+    $("sr-chart-tip").style.display = "none";
+    drawSRChart();
+  });
+  cv.addEventListener("dblclick", () => {
+    srChart.barsVis = 120; srChart.viewEnd = null;
+    drawSRChart();
+  });
+  window.addEventListener("resize", () => drawSRChart());
+}
+bindSRChartEvents();
+setInterval(() => {
+  const sec = $("tab-overview");
+  if (document.visibilityState === "visible" && sec && sec.classList.contains("active") &&
+      $("sr-chart-auto") && $("sr-chart-auto").checked) loadSRChart(true);
+}, 15000);
+
+// ── 手动交易 ──────────────────────────────────────────────
+async function checkOrder(direction) {
+  const symbol = $("mn-symbol").value.trim();
+  const lot = parseFloat($("mn-lot").value);
+  if (!symbol || !lot || lot <= 0) { showMsg("mn-msg", "请先填写有效的品种和手数", false); return; }
+  try {
+    const r = await api("/api/mt5/order_check", { method: "POST", body: JSON.stringify({ symbol, direction, lot }) });
+    showMsg("mn-msg", r.ok ? "预检查通过：" + (r.comment || "MT5 接受该订单参数") : "预检查未通过：" + (r.comment || r.message || "请查看 MT5 返回"), r.ok);
+  } catch (e) { showMsg("mn-msg", "预检查失败：" + e.message, false); }
+}
+async function manualOrder(direction) {
+  const symbol = $("mn-symbol").value.trim();
+  const lot = parseFloat($("mn-lot").value);
+  if (!symbol) { showMsg("mn-msg", "请填写品种", false); return; }
+  const text = direction === "CLOSE_ALL"
+    ? "全部平掉 " + symbol + " 的持仓？"
+    : "市价 " + (direction === "BUY" ? "买入" : "卖出") + " " + symbol + " " + lot + " 手？";
+  askConfirm("手动下单确认", text, async () => {
+    try {
+      const r = await api("/api/mt5/order", { method: "POST", body: JSON.stringify({ confirmed: true, symbol, direction, lot }) });
+      showMsg("mn-msg", r.message, r.ok);
+    } catch (e) { showMsg("mn-msg", e.message, false); }
+  });
+}
+
+// ── 持仓管理（平仓 / 止损 / 止盈）─────────────────────────
+function closePosition(ticket, symbol) {
+  askConfirm("平仓确认", "确定平掉 " + symbol + " 的持仓 ticket=" + ticket + "？\n\n（若绑定策略信号仍在，下一根收盘 K 线可能重新开仓）", async () => {
+    try {
+      const r = await api("/api/mt5/position/close", { method: "POST", body: JSON.stringify({ confirmed: true, ticket }) });
+      showMsg("ov-msg", r.message, r.ok);
+    } catch (e) { showMsg("ov-msg", "平仓失败：" + e.message, false); }
+    refreshStatus();
+  });
+}
+function editStop(ticket, symbol, curSl, curPrice, direction) {
+  const suggestion = curSl || (direction === "BUY" ? curPrice * 0.98 : curPrice * 1.02);
+  const v = prompt("修改 " + symbol + " ticket=" + ticket + " 的止损价\n（当前止损 " + (curSl || "无") + "，现价 " + curPrice + "）", Number(suggestion).toFixed(2));
+  if (v == null) return;
+  const sl = parseFloat(v);
+  if (!sl || sl <= 0) { showMsg("ov-msg", "止损价格无效", false); return; }
+  api("/api/mt5/position/sl", { method: "POST", body: JSON.stringify({ ticket, sl }) })
+    .then(r => { showMsg("ov-msg", r.message, r.ok); refreshStatus(); })
+    .catch(e => showMsg("ov-msg", "修改失败：" + e.message, false));
+}
+function editTarget(ticket, symbol, curTp, curPrice, direction) {
+  const suggestion = curTp || (direction === "BUY" ? curPrice * 1.02 : curPrice * 0.98);
+  const v = prompt("修改 " + symbol + " ticket=" + ticket + " 的止盈价\n（当前止盈 " + (curTp || "无") + "，现价 " + curPrice + "）\n填 0 表示清除止盈", Number(suggestion).toFixed(2));
+  if (v == null) return;
+  const tp = parseFloat(v);
+  if (isNaN(tp) || tp < 0) { showMsg("ov-msg", "止盈价格无效", false); return; }
+  api("/api/mt5/position/tp", { method: "POST", body: JSON.stringify({ ticket, tp }) })
+    .then(r => { showMsg("ov-msg", r.message, r.ok); refreshStatus(); })
+    .catch(e => showMsg("ov-msg", "修改失败：" + e.message, false));
+}
+
+// ── 历史成交 ──────────────────────────────────────────────
+async function loadHistory() {
+  const days = parseInt($("hs-days").value, 10) || 7;
+  try {
+    const r = await api("/api/mt5/history?days=" + days);
+    if (r.server_offset_sec != null) window.__srvOff = r.server_offset_sec;
+    $("hs-meta").textContent = "共 " + r.total_deals + " 笔成交记录（近 " + r.days + " 天，仅本软件的仓位）";
+    const money = v => v > 0 ? "<span class='long'>+" + v.toFixed(2) + "</span>" : (v < 0 ? "<span class='short'>" + v.toFixed(2) + "</span>" : "0.00");
+    const closedRows = (r.closed || []).map(t =>
+      "<tr><td>" + esc(t.symbol) + "</td><td>" + (t.direction === "BUY" ? "<span class='long'>多</span>" : "<span class='short'>空</span>") +
+      "</td><td>" + t.volume + "</td><td>" + t.open_price + "</td><td class='hint'>" + tsToStr(t.open_time) +
+      "</td><td>" + (t.close_price != null ? t.close_price : "—") + "</td><td class='hint'>" + tsToStr(t.close_time) +
+      "</td><td>" + money(t.profit) + "</td><td class='hint'>" + esc(t.comment || "") + "</td></tr>").join("");
+    $("hs-closed").innerHTML = closedRows
+      ? "<table><thead><tr><th>品种</th><th>方向</th><th>手数</th><th>开仓价</th><th>开仓时间</th><th>平仓价</th><th>平仓时间</th><th>净盈亏</th><th>备注</th></tr></thead><tbody>" + closedRows + "</tbody></table>"
+      : "<div class='hint'>范围内没有已平仓的交易。</div>";
+    const openRows = (r.open || []).map(t =>
+      "<tr><td>" + esc(t.symbol) + "</td><td>" + (t.direction === "BUY" ? "<span class='long'>多</span>" : "<span class='short'>空</span>") +
+      "</td><td>" + t.volume + "</td><td>" + t.open_price + "</td><td class='hint'>" + tsToStr(t.open_time) +
+      "</td><td class='hint'>" + esc(t.comment || "") + "</td></tr>").join("");
+    $("hs-open").innerHTML = openRows
+      ? "<table><thead><tr><th>品种</th><th>方向</th><th>手数</th><th>开仓价</th><th>开仓时间</th><th>备注</th></tr></thead><tbody>" + openRows + "</tbody></table>"
+      : "<div class='hint'>没有持仓中的建仓记录。</div>";
+  } catch (e) {
+    $("hs-closed").innerHTML = "<span class='hint' style='color:var(--red)'>加载失败：" + esc(e.message) + "</span>";
+    $("hs-open").innerHTML = "";
+  }
+}
+
+// ── 日志 ──────────────────────────────────────────────────
+let lgCurrent = "runner";
+async function loadLogView() {
+  lgCurrent = $("lg-source").value;
+  try {
+    const r = await api("/api/logs/" + (lgCurrent === "runner" ? "runner" : "dashboard") + "?lines=300");
+    renderLog(r.log || "");
+  } catch (e) {
+    $("lg-view").textContent = "加载失败：" + e.message;
+  }
+}
+function renderLog(text) {
+  const box = $("lg-view");
+  if (!text) { box.textContent = "暂无日志"; return; }
+  const lines = text.split("\n").slice(-400);
+  box.innerHTML = lines.map(l => {
+    const m = l.match(/\| (INFO|SUCCESS|WARNING|ERROR|CRITICAL|DEBUG|TRACE)\s*\|/);
+    const lv = m ? m[1] : "INFO";
+    return "<div class='lv lv-" + lv + "'>" + esc(l) + "</div>";
+  }).join("");
+  box.scrollTop = box.scrollHeight;
+}
+async function clearLog() {
+  if (!window.confirm("确定清空当前日志？清空后无法恢复（新日志会从头继续写）。")) return;
+  try {
+    const r = await api("/api/logs/clear", { method: "POST", body: JSON.stringify({ name: lgCurrent }) });
+    showMsg("lg-msg", r.message || "已清空", true);
+    loadLogView();
+  } catch (e) { showMsg("lg-msg", e.message, false); }
+}
+function exportLog() {
+  window.open("/api/logs/export?name=" + encodeURIComponent(lgCurrent), "_blank");
+}
+
+// ── 定时器 ────────────────────────────────────────────────
+setInterval(() => {
+  $("clock").textContent = new Date().toLocaleString("zh-CN", { hour12: false });
+}, 1000);
+setInterval(() => { refreshStatus(); }, 5000);
+setInterval(() => { loadEquityChart(); }, 60000);   // 净值采样一分钟一点足够
+setInterval(() => {
+  const active = document.querySelector("nav button.active");
+  if (!active) return;
+  if (active.dataset.tab === "training") pollTraining();
+  if (active.dataset.tab === "backtest") pollBacktest();
+  if (active.dataset.tab === "logs" && $("lg-auto") && $("lg-auto").checked) loadLogView();
+}, 5000);
+
+// ── 初始化 ────────────────────────────────────────────────
+(async function init() {
+  refreshStatus();
+  loadEquityChart();
+  try { fillRiskForm(await api("/api/config")); } catch (e) { /* 忽略 */ }
+  loadDataFiles();
+  loadStrategyDropdowns();
+  window.addEventListener("resize", () => { loadEquityChart(); loadTrainCurve(); });
+  window.addEventListener("error", ev => console.error("页面JS错误:", ev.message));
+})();
+</script>
+</body>
+</html>

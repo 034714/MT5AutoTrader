@@ -1,0 +1,33 @@
+# ── 运行时产生的文件（会自动重建）──────────────────
+logs/
+__pycache__/
+*.pyc
+*.pid
+STOP_SIGNAL
+portfolio_state.json
+
+# ── 用户数据（训练成果与配置）──────────────────────
+# 首次部署时参照 trader_config.example.json 创建自己的配置
+trader_config.json
+strategies/*.json
+strategies/*.md
+!strategies/.gitkeep
+checkpoints/
+backtest_output/
+training_history_*.json
+training_time_*.json
+
+# ── 凭证 ───────────────────────────────────────────
+.env
+
+# ── 系统杂项 ───────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.tmp
+
+# Local python fallback (machine-specific transition override)
+fallback_python.txt
+runtime/
+dist/
+get-pip.py
+python-3.11*.zip

@@ -1,0 +1,33 @@
+{
+  "dry_run": true,
+  "bindings": [],
+  "risk": {
+    "enable_price_monitor": true,
+    "price_monitor_interval": 10,
+    "stop_loss_pct": -0.02,
+    "breakeven_levels": [
+      [0.01, 0.0],
+      [0.02, 0.01],
+      [0.03, 0.02],
+      [0.04, 0.03]
+    ],
+    "sr_enabled": true,
+    "sr_buffer_atr": 0.25,
+    "sr_tp_buffer_atr": 0.1,
+    "sr_min_sl_pct": 0.004,
+    "sr_max_sl_pct": 0.03,
+    "sr_min_tp_pct": 0.006,
+    "sr_max_tp_pct": 0.06,
+    "sr_partial_enabled": true,
+    "sr_partial_fraction": 0.5,
+    "sr_partial_use_model": true,
+    "sr_partial_min_phold": 0.55
+  },
+  "min_trade_exposure": 0.05,
+  "max_lot_per_trade": 1.0,
+  "max_open_positions": 3,
+  "magic_number": 20260904,
+  "deviation_points": 20,
+  "signal_bars": 1000,
+  "kline_cache_dir": "D:\\K线数据"
+}

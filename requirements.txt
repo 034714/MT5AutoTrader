@@ -1,0 +1,29 @@
+# MT5AutoTrader 最小依赖（Python 3.11+，仅 Windows 可用 MetaTrader5 包）
+#
+# 推荐在项目根目录创建独立虚拟环境（start.bat 会优先使用它）：
+#   python -m venv .venv
+#   .venv\Scripts\python -m pip install -r requirements.txt
+
+# 训练 / 信号计算（训练固定使用 CPU，无需 GPU 相关包）
+torch
+numpy
+scipy
+tqdm
+
+# 数据
+pandas
+pyarrow
+
+# MT5 行情与下单
+MetaTrader5
+
+# 回测图表
+matplotlib
+
+# 看板
+fastapi
+uvicorn
+
+# 日志与配置
+loguru
+python-dotenv
