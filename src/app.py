@@ -183,22 +183,22 @@ def favicon():
 
 # ── 总览 / 状态 ─────────────────────────────────────────────────────
 
-def _live_positions(client) -> tuple[dict, int | None]:
+def _live_positions(client) -> tuple[list, int | None]:
     """直接从 MT5 读取本软件 magic 的全部持仓（Runner 是否运行都调用）。
 
     Returns:
-        ({symbol: position_dict}, server_offset_sec)
+        ([position_dict, ...], server_offset_sec)
+        列表结构与 Runner 状态文件里的 positions 一致（同品种可有多笔）。
     """
     server_offset = client.server_time_offset()
-    result: dict = {}
+    result: list = []
     try:
         from trading.mt5_client import position_to_dict
         positions = client.get_positions()
     except Exception:
         return result, server_offset
     for p in positions:
-        info = position_to_dict(client, p, server_offset)
-        result[info["symbol"]] = info
+        result.append(position_to_dict(client, p, server_offset))
     return result, server_offset
 
 
