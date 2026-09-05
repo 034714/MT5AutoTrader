@@ -353,8 +353,16 @@ def api_runner_start():
         pass
     LOGS_DIR.mkdir(exist_ok=True)
     log_fh = open(RUNNER_LOG, "a", encoding="utf-8")
+    # 嵌入式 Python（runtime\python.exe 带 python311._pth）处于隔离模式：
+    # 不会把 cwd 加进 sys.path，"python -m trading.runner" 会报 No module named
+    # 'trading'。这里显式把 src 注入 sys.path 后再以 __main__ 运行。
+    boot = (
+        "import sys, runpy;"
+        f"sys.path.insert(0, r'{SRC}');"
+        "runpy.run_module('trading.runner', run_name='__main__')"
+    )
     proc = subprocess.Popen(
-        [_venv_python(), "-m", "trading.runner"],
+        [_venv_python(), "-c", boot],
         cwd=str(SRC),
         stdout=log_fh,
         stderr=subprocess.STDOUT,
