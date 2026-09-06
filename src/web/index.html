@@ -199,7 +199,7 @@
           <div class="row"><label>MT5 品种</label><input type="text" id="bind-symbol" placeholder="例如 ETHUSD_（注意下划线）">
             <button class="btn small ghost" onclick="loadSymbols()">拉取可选品种</button></div>
           <div id="symbol-sugg" class="hint"></div>
-          <div class="row"><label>手数</label><input type="number" id="bind-lot" value="0.01" step="0.01" min="0.01"></div>
+          <div class="row"><label>手数</label><input type="number" id="bind-lot" value="0.1" step="0.01" min="0.01"></div>
           <div class="row"><button class="btn" onclick="bindStrategy()">绑定</button></div>
           <div id="bind-msg" class="msg"></div>
           <h3 style="margin-top:14px">当前绑定</h3>
@@ -426,7 +426,7 @@
     <div class="card" style="max-width:560px">
       <h3>手动下单</h3>
       <div class="row"><label>品种</label><input type="text" id="mn-symbol" list="mt5-symbol-list" autocomplete="off" placeholder="ETHUSD_" value="ETHUSD_"></div>
-      <div class="row"><label>手数</label><input type="number" id="mn-lot" value="0.01" step="0.01" min="0.01"></div>
+      <div class="row"><label>手数</label><input type="number" id="mn-lot" value="0.1" step="0.01" min="0.01"></div>
       <div class="row">
         <button class="btn ghost" onclick="checkOrder('BUY')">检查买单</button>
         <button class="btn ghost" onclick="checkOrder('SELL')">检查卖单</button>
@@ -462,8 +462,8 @@
       <div class="hint" style="margin-top:8px">数据直接来自 MT5 成交流水（history_deals），含手续费与库存费，按仓位号归并；时间为本地时间（已按服务器时区换算）。</div>
     </div>
     <div class="card" style="margin-top:14px">
-      <h3>账户净值走势（每 60 秒记一个点）</h3>
-      <canvas id="eq-chart" width="600" height="160" style="width:100%;height:160px;background:var(--panel2);border:1px solid var(--border);border-radius:6px"></canvas>
+      <h3>账户净值走势</h3>
+      <canvas id="eq-chart" width="600" height="260" style="width:100%;height:260px;background:var(--panel2);border:1px solid var(--border);border-radius:6px"></canvas>
       <div id="eq-chart-meta" class="hint" style="margin-top:4px">页面开着就会持续积累数据（看板重启后从零开始）。</div>
     </div>
   </section>
@@ -981,18 +981,52 @@ async function loadBacktestReport(explicit) {
     const r = await api("/api/backtest/report");
     const rep = r.report;
     if (rep) {
-      const parts = [];
-      for (const sym of Object.keys(rep)) {
-        const d = rep[sym];
-        if (d && typeof d === "object") {
-          parts.push("<b>" + esc(sym) + "</b>：" +
-            "总收益 " + (d.total_return != null ? (d.total_return * 100).toFixed(2) + "%" : "—") +
-            "，Sharpe " + (d.sharpe != null ? d.sharpe : "—") +
-            "，Sortino " + (d.sortino != null ? d.sortino : "—") +
-            "，最大回撤 " + (d.max_drawdown != null ? (d.max_drawdown * 100).toFixed(2) + "%" : "—"));
+      // 数据形如 {symbols: {sym: {...指标...}}, portfolio: {...}}
+      const src = rep.symbols || rep;   // 兼容旧格式（直接按品种做键）
+      const rows = [];
+      const pct = v => v != null ? (v * 100).toFixed(2) + "%" : "—";
+      const num = v => v != null ? Number(v).toFixed(2) : "—";
+      const retCls = v => v == null ? "" : (v > 0 ? "long" : (v < 0 ? "short" : ""));
+      const row = (label, d, isTotal) => {
+        if (!d || typeof d !== "object") return;
+        const ret = d.total_return;
+        rows.push("<tr" + (isTotal ? " style='border-top:2px solid var(--border)'" : "") + ">" +
+          "<td><b>" + esc(label) + "</b></td>" +
+          "<td class='" + retCls(ret) + "'>" + pct(ret) + "</td>" +
+          "<td>" + (d.n_trades != null ? d.n_trades : "—") + "</td>" +
+          "<td>" + pct(d.win_rate) + "</td>" +
+          "<td>" + num(d.profit_loss_ratio) + "</td>" +
+          "<td>" + num(d.avg_hold_bars) + "</td>" +
+          "<td>" + num(d.sharpe) + "</td>" +
+          "<td>" + num(d.sortino) + "</td></tr>");
+      };
+      for (const sym of Object.keys(src)) {
+        const d = src[sym];
+        if (d && typeof d === "object" && d.total_return != null) row(sym, d, false);
+      }
+      row("组合合计", rep.portfolio, true);
+      let html = "";
+      if (rows.length) {
+        html += "<table style='border-collapse:collapse;width:100%'>" +
+          "<tr class='hint'><td align='left'>品种</td><td>收益率</td><td>交易次数</td><td>胜率</td>" +
+          "<td>盈亏比</td><td>平均持仓(根K线)</td><td>夏普比率</td><td>索提诺比率</td></tr>" +
+          rows.join("") + "</table>" +
+          "<div class='hint' style='margin-top:8px'>收益率 = 整段回测的涨跌幅；胜率 = 盈利交易占全部交易的比例；" +
+          "盈亏比 = 平均每笔赚的钱 ÷ 平均每笔亏的钱（大于 1 表示赚的时候比亏的时候多）；" +
+          "夏普/索提诺比率 = 每承担一份波动换到的收益，越高越好，一般大于 1 算不错、小于 0 表示亏得不划算。" +
+          "以上均为历史回测，不代表未来表现。</div>";
+      } else {
+        html += "报告格式解析中，请直接看回测输出图表";
+      }
+      // 策略公式（看得懂的翻译版）折叠展示
+      for (const sym of Object.keys(src)) {
+        const d = src[sym];
+        if (d && d.readable) {
+          html += "<details style='margin-top:8px'><summary class='hint' style='cursor:pointer'>" +
+            esc(sym) + " 策略公式</summary><div class='hint' style='margin-top:4px'>" + esc(d.readable) + "</div></details>";
         }
       }
-      $("bt-report").innerHTML = parts.length ? parts.join("<br>") : "报告格式解析中，请直接看回测输出图表";
+      $("bt-report").innerHTML = html;
     } else if (explicit) {
       $("bt-report").textContent = "暂无报告（先运行回测）";
     }

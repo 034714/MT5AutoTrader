@@ -3,13 +3,25 @@
   "bindings": [],
   "risk": {
     "enable_price_monitor": true,
-    "price_monitor_interval": 10,
+    "price_monitor_interval": 15,
     "stop_loss_pct": -0.02,
     "breakeven_levels": [
-      [0.01, 0.0],
-      [0.02, 0.01],
-      [0.03, 0.02],
-      [0.04, 0.03]
+      [
+        0.1,
+        0.01
+      ],
+      [
+        0.3,
+        0.1
+      ],
+      [
+        0.5,
+        0.2
+      ],
+      [
+        1,
+        0.4
+      ]
     ],
     "sr_enabled": true,
     "sr_buffer_atr": 0.25,
@@ -19,13 +31,13 @@
     "sr_min_tp_pct": 0.006,
     "sr_max_tp_pct": 0.06,
     "sr_partial_enabled": true,
-    "sr_partial_fraction": 0.5,
+    "sr_partial_fraction": 0.4,
     "sr_partial_use_model": true,
-    "sr_partial_min_phold": 0.55
+    "sr_partial_min_phold": 0.6
   },
-  "min_trade_exposure": 0.05,
+  "min_trade_exposure": 0.8,
   "max_lot_per_trade": 1.0,
-  "max_open_positions": 3,
+  "max_open_positions": 5,
   "magic_number": 20260904,
   "deviation_points": 20,
   "signal_bars": 1000,
