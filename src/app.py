@@ -309,7 +309,55 @@ def _push_equity_sample(equity: float) -> None:
 
 @app.get("/api/equity/history")
 def api_equity_history():
-    return {"points": _EQUITY_SAMPLES}
+    return {"points": _EQUITY_SAMPLES, "history": _balance_history_points()}
+
+
+# 历史余额推算结果缓存：(时刻, 点列表)。页面每 60 秒轮询本接口，
+# 流水重读很费，5 分钟刷新一次足够（余额历史本来就是粗粒度）。
+_BALANCE_HISTORY_CACHE: tuple[float, list] = (0.0, [])
+_BALANCE_HISTORY_TTL = 300
+
+
+def _balance_history_points(days: int = 90, max_points: int = 400) -> list:
+    """从 MT5 成交流水推算账户余额历史（粗粒度），供净值图回填。
+
+    MT5 不保存历史净值，只能按「每笔成交的盈亏+手续费+库存费+出入金」
+    从当前余额反推：起点余额 = 当前余额 - 窗口内全部变动，再逐笔累加。
+    返回 [[本机unix秒, balance], ...]，失败返回 []。
+    """
+    global _BALANCE_HISTORY_CACHE
+    now = time.time()
+    cached_ts, cached = _BALANCE_HISTORY_CACHE
+    if now - cached_ts < _BALANCE_HISTORY_TTL:
+        return cached
+    points: list = []
+    try:
+        client = _get_mt5_client()
+        ai = client.account_info() if client is not None else None
+        if client is not None and ai is not None:
+            import MetaTrader5 as mt5
+            to = datetime.now() + timedelta(days=1)
+            frm = datetime.now() - timedelta(days=days)
+            deals = mt5.history_deals_get(frm, to) or []
+            offset = client.server_time_offset() or 0
+            deltas: list[tuple[float, float]] = []
+            total = 0.0
+            for d in deals:
+                delta = float(d.profit) + float(d.commission) + float(d.swap)
+                total += delta
+                deltas.append((float(d.time) - offset, delta))
+            if deltas:
+                bal = float(ai.balance) - total
+                stride = max(1, len(deltas) // max_points)
+                for i, (ts, delta) in enumerate(deltas):
+                    bal += delta
+                    if i % stride == 0 or i == len(deltas) - 1:
+                        points.append([ts, round(bal, 2)])
+    except Exception as exc:
+        logger.warning(f"[净值图] 历史余额推算失败（只用在线采样）: {exc}")
+        points = []
+    _BALANCE_HISTORY_CACHE = (now, points)
+    return points
 
 
 # ── 配置读写 ────────────────────────────────────────────────────────

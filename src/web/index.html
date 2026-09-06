@@ -893,11 +893,16 @@ async function saveDataDir() {
 async function loadEquityChart() {
   try {
     const r = await api("/api/equity/history");
+    // 历史段：由 MT5 成交流水推算的余额（粗粒度）；在线段：页面开着时的净值采样
+    const hist = (r.history || []).map(p => [p[0] * 1000, p[1]]);
     const pts = (r.points || []).map(p => [p[0] * 1000, p[1]]);
-    drawLineChart($("eq-chart"), pts, { color: "#2ecc71", fmt: v => v.toFixed(0) });
-    if (pts.length >= 2) {
-      const ys = pts.map(p => p[1]);
-      $("eq-chart-meta").textContent = "采样 " + pts.length + " 点｜期间 " +
+    const all = hist.concat(pts);
+    drawLineChart($("eq-chart"), all, { color: "#2ecc71", fmt: v => v.toFixed(0) });
+    if (all.length >= 2) {
+      const ys = all.map(p => p[1]);
+      $("eq-chart-meta").textContent =
+        (hist.length ? "历史余额 " + hist.length + " 点（由成交流水推算）＋ " : "") +
+        "在线采样 " + pts.length + " 点｜期间 " +
         (Math.min.apply(null, ys)).toFixed(2) + " ~ " + (Math.max.apply(null, ys)).toFixed(2);
     }
   } catch (e) { /* 忽略 */ }
