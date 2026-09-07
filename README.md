@@ -2,8 +2,9 @@
 
 MT5AutoTrader 是一套独立的 MT5 策略训练、回测和自动交易工具。
 
-> **本项目由 AI 编写**：全部代码由 AI（ZCode / GLM 模型）在用户的自然语言指导下编写与调试，人类负责提出需求、验收和决策。我们鼓励你也用 AI 来改进和修复它——给任何 AI 助手（Claude / ChatGPT / ZCode / Cursor 等）附上 [AGENTS.md](AGENTS.md)（AI 交接规则文档）和本 README，就能快速上手改代码；欢迎提交 PR，并请注明 AI 参与情况。
- 交流 QQ 群：133822181
+> **由 AI 编写**：全部代码由 AI（ZCode）在用户的自然语言指导下编写与调试，人类负责提出需求、验收和决策。我们鼓励你也用 AI 来改进和修复它——给任何 AI 助手（Claude / ChatGPT / ZCode / Cursor 等）附上 [AGENTS.md](AGENTS.md)（AI 交接规则文档）和本 README，就能快速上手改代码；欢迎提交 PR，并请注明 AI 参与情况。
+> 
+ 交流 QQ 群：133822181    感兴趣的求Star(ฅ⁍̴̀◊⁍̴́)و ̑̑
 
 ## 功能总览
 
