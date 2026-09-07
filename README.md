@@ -66,7 +66,7 @@ start.bat   （会优先使用 .venv）
 - `说明.txt`：中文详细使用教程
 - `AGENTS.md`：给 AI 助手的交接规则（已知 Windows 坑都记在里面）
 
-##  AI 创作的项目
+## AI驱动
 
 1. 把本仓库 clone 给你的 AI 助手，并让它先读 [AGENTS.md](AGENTS.md)（记录了架构约定和已踩过的坑）
 2. 明确描述需求或 bug 现象（贴上 `logs/` 里的相关日志更好）
