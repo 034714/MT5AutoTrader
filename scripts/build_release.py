@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """构建 Windows 便携版发布包（内嵌 Python + 预装依赖）。
 
-产物: dist/MT5AutoTrader-1.0.0-windows-x64.zip
+产物: dist/MT5AutoTrader-1.0.1-windows-x64.zip
 步骤:
   1. 下载 Windows embeddable Python 3.11（python.org / 华为云镜像）
   2. 解压到 runtime/，启用 pip（_pth + get-pip）
@@ -143,7 +143,7 @@ def main():
     (PKG / "install.bat").write_bytes(install_bat.encode("ascii"))
 
     # 6. 打 zip
-    out = DIST / "MT5AutoTrader-1.0.0-windows-x64.zip"
+    out = DIST / "MT5AutoTrader-1.0.1-windows-x64.zip"
     print("[打包]", out)
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
         for base, _dirs, files in os.walk(PKG):

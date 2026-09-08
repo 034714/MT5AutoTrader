@@ -102,6 +102,26 @@ class ModelConfig:
     NOISE_MAX:           float = 0.60
     NOISE_BOOST_FACTOR:  float = 2.0   # noise += 0.2 * (stagnation / window)
 
+    # ── 停滞硬重启（2026-09-07）────────────────────────────────────────
+    # 熵坍塌检测只覆盖 H < COLLAPSE_THRESH 的情况；实测存在熵停在阈值上方
+    # （如 1.05）但分布已经死亡的"假健康"状态（有效词汇≈1，最高概率 0.99），
+    # 卡住数百步不刷新最优。开启后每满 STAGNATION_WINDOW 步未刷新最优，
+    # 就从 best_snapshot 强扰动全参数一次，不再等熵跌破阈值。
+    STAG_HARD_RESTART:   bool  = True
+    # 首次未刷新最优达到此步数时即强扰动，之后每 STAGNATION_WINDOW 步再判断。
+    # 旧版只在 500 步时才介入，500 步试跑等于全程不处理。
+    STAG_HARD_RESTART_FIRST: int = 150
+    # 后续检查间隔独立于自适应噪声窗口；设为 150 代表 150/300/450 步均可
+    # 强重启，三次无提升便自动结束，不会在 500 步短训练里完全不介入。
+    STAG_HARD_RESTART_INTERVAL: int = 150
+    # 连续 N 个停滞窗口（首次算一个）仍无进步就自动结束训练，
+    # 保留当前最优策略；0 = 关闭
+    STAG_AUTO_STOP_WINDOWS: int = 3
+
+    # ── 检查点自动清理（2026-09-07）────────────────────────────────────
+    # 每个品种只保留最近 N 个检查点（每个约 170MB），防止 checkpoints/ 无限膨胀
+    KEEP_CHECKPOINTS:    int   = 3
+
     # ── 重启多样性（Fix 2: best_snapshot 吸引子效应）─────────────────────
     # 每 FULL_RESET_EVERY 次重启中，做 1 次完全随机初始化而非从 best_snapshot 恢复。
     FULL_RESET_EVERY:    int   = 3     # 每 3 次重启中第 3 次做 full reset
@@ -124,7 +144,8 @@ class ModelConfig:
     # 注意：Island 模式在 CPU 训练下会让总时间变成 N 倍（islands 串行），
     # 对于 index 这类大数组（T=32076）会变得极慢。当前默认关闭，保留配置开关。
     N_ISLANDS:              int   = 1
-    MIGRATION_INTERVAL:     int   = 500
+    # 150 步迁移一次：500 步试跑至少能发生 3 次迁移，避免训练结束前岛间从未交换精英
+    MIGRATION_INTERVAL:     int   = 150
     MIGRATION_TOP_K:        int   = 5
     # island 默认关闭，避免用户误开导致速度爆炸
 

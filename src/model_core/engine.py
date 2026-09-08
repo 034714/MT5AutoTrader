@@ -274,6 +274,11 @@ class AlphaEngine:
             'step': [], 'avg_reward': [], 'best_score': [], 'val_score': [], 'stable_rank': []
         }
         self._restart_count      = 0
+        # 多岛训练时各岛共用 target_symbol 会互写同一个训练曲线文件；
+        # history_tag 非空时优先用它命名（如 "BTCUSD__isl2"）
+        self.history_tag: str | None = None
+        # 关闭后不写检查点（岛模式的岛不可续训，且 3 岛×每 20 步一存太占盘）
+        self.save_checkpoints = True
         self.factor_pool: list[tuple[float, int, torch.Tensor]] = []
         self._factor_pool_counter = 0
 
@@ -284,6 +289,10 @@ class AlphaEngine:
         # 自适应噪声：记录 best 刷新步数
         self._best_update_step = 0
         self._stagnation_steps = 0
+        # 连续无进步的停滞窗口数（自动停止用）
+        self._stag_windows_no_gain = 0
+        # 自动停止后供岛模式跳过该岛的后续阶段
+        self.stopped_early = False
 
         # Fix 3: EMA reward baseline
         self._reward_ema: float | None = None
@@ -648,6 +657,10 @@ class AlphaEngine:
                   f"正向×{ModelConfig.IC_GATE_MULT}  负向×{ModelConfig.IC_NEG_MULT}")
             print(f"   最大重启: {ModelConfig.MAX_RESTARTS}  "
                   f"噪声={ModelConfig.RESTART_NOISE}")
+            if ModelConfig.STAG_HARD_RESTART:
+                print(f"   停滞硬重启: 每 {ModelConfig.STAGNATION_WINDOW} 步未刷新最优即强扰动"
+                      + (f"；连续 {ModelConfig.STAG_AUTO_STOP_WINDOWS} 个窗口无进步自动结束"
+                         if ModelConfig.STAG_AUTO_STOP_WINDOWS > 0 else ""))
 
         T     = self.data_manager.target_ret.shape[1]
         folds = _build_walk_forward_folds(T, self.n_folds,
@@ -901,6 +914,7 @@ class AlphaEngine:
                             self._best_snapshot = copy.deepcopy(self.model.state_dict())
                             self._best_update_step = step
                             self._stagnation_steps = 0
+                            self._stag_windows_no_gain = 0
                             self._update_factor_pool(final_val, res)
                             self._save_strategy_live()
                             tqdm.write(
@@ -1050,7 +1064,7 @@ class AlphaEngine:
 
             self._save_training_history_live()
 
-            if (step + 1) % 20 == 0 or (step + 1) == end_step:
+            if self.save_checkpoints and ((step + 1) % 20 == 0 or (step + 1) == end_step):
                 ckpt = self.save_checkpoint(step + 1)
                 tqdm.write(f"[检查点] → {ckpt} (最优={self.best_score:.3f})")
 
@@ -1058,6 +1072,46 @@ class AlphaEngine:
             if migration_hook is not None and (step + 1) % ModelConfig.MIGRATION_INTERVAL == 0:
                 tqdm.write(f"[迁移钩子 @ 第{step+1}步] 调用已注册钩子")
                 migration_hook(self, step + 1)
+
+            # ── Part G2: 停滞硬重启（与熵无关，2026-09-07）────────────
+            # 熵坍塌检测只覆盖 H < COLLAPSE_THRESH；实测有熵停在阈值上方
+            # （如 1.05）但分布已死的"假健康"状态（有效词汇≈1），卡数百步。
+            # 每满首个阈值后按 STAGNATION_WINDOW 间隔未刷新最优，就从
+            # best_snapshot 强扰动。首个阈值比常规窗口小，避免短训练全程不介入。
+            if ModelConfig.STAG_HARD_RESTART and self._restart_count < ModelConfig.MAX_RESTARTS:
+                stag = step - self._best_update_step
+                first = max(1, int(getattr(ModelConfig, "STAG_HARD_RESTART_FIRST", ModelConfig.STAGNATION_WINDOW)))
+                interval = max(1, int(getattr(
+                    ModelConfig, "STAG_HARD_RESTART_INTERVAL", ModelConfig.STAGNATION_WINDOW)))
+                due = stag >= first and (stag - first) % interval == 0
+                if due:
+                    self._stag_windows_no_gain += 1
+                    # 多次无效训练自动停止：连续 N 个停滞窗口仍无进步，
+                    # 提前结束并保留当前最优（策略在循环外的收尾段落保存）
+                    if (
+                        ModelConfig.STAG_AUTO_STOP_WINDOWS > 0
+                        and self._stag_windows_no_gain >= ModelConfig.STAG_AUTO_STOP_WINDOWS
+                    ):
+                        tqdm.write(
+                            f"[自动停止 @ 第{step}步] 连续 {self._stag_windows_no_gain} 个停滞窗口"
+                            f"（约 {stag} 步）未刷新最优，提前结束训练，保留当前最优 "
+                            f"{self.best_score:.3f}"
+                        )
+                        self.stopped_early = True
+                        break
+                    self._restart_count += 1
+                    noise = min(ModelConfig.NOISE_MAX, ModelConfig.RESTART_NOISE * 2.0)
+                    if self._best_snapshot is not None:
+                        self.model.load_state_dict(self._best_snapshot)
+                    with torch.no_grad():
+                        for p in self.model.parameters():
+                            p.add_(torch.randn_like(p) * noise)
+                    self.opt = torch.optim.AdamW(self.model.parameters(), lr=1e-3)
+                    tqdm.write(
+                        f"[停滞重启 {self._restart_count}/{ModelConfig.MAX_RESTARTS} "
+                        f"@ 第{step}步] 已 {stag} 步未刷新最优，从最优快照强扰动全参数 "
+                        f"噪声={noise:.3f} 熵={ent_val:.3f}"
+                    )
 
             # ── Part G: Entropy collapse detection & restart ─────────
             if ent_val < ModelConfig.ENTROPY_COLLAPSE_THRESH:
@@ -1153,8 +1207,9 @@ class AlphaEngine:
                     )
 
         # ── End of training ──────────────────────────────────────────
-        # 仅当跑满最终步时才保存最终 strategy 和历史
-        if end_step == ModelConfig.TRAIN_STEPS:
+        # 仅当跑满最终步时才保存最终 strategy 和历史；岛模式的岛没有
+        # target_symbol，策略由 IslandAlphaEngine 统一保存
+        if end_step == ModelConfig.TRAIN_STEPS and self.target_symbol:
             if self.best_formula is not None:
                 from .vocab import VOCAB_VERSION
                 strategy_data = {
@@ -1202,10 +1257,11 @@ class AlphaEngine:
         P1-3 修复：原子写入（tmp + os.replace），避免 Ctrl+C / OOM 打断写入
         导致 history 文件损坏。异常打印告警而非静默吞掉。
         """
-        if not self.target_symbol:
+        if not self.target_symbol and not self.history_tag:
             return
         try:
-            hist_path = f"training_history_{self.target_symbol}.json"
+            sym = self.history_tag or self.target_symbol
+            hist_path = f"training_history_{sym}.json"
             payload = {
                 k: v for k, v in self.training_history.items()
                 if k != "_low_entropy_streak"
@@ -1229,7 +1285,9 @@ class AlphaEngine:
         P1-3 修复：原子写入（tmp + os.replace），避免写入中途被打断导致
         strategy JSON 截断损坏——既丢新最优也丢旧最优。异常打印告警。
         """
-        if self.best_formula is None:
+        # 岛模式的岛没有 target_symbol（策略由 IslandAlphaEngine 统一保存），
+        # 不能让它写通用策略文件
+        if self.best_formula is None or not self.target_symbol:
             return
         try:
             from .vocab import VOCAB_VERSION
@@ -1311,6 +1369,20 @@ class AlphaEngine:
         tmp_path = path + ".tmp"
         torch.save(ckpt, tmp_path)
         os.replace(tmp_path, path)
+        # 只保留同品种最近 KEEP_CHECKPOINTS 个检查点（每个约 170MB），
+        # 防止 checkpoints/ 无限膨胀；刚写入的这条是最新的一定保留。
+        try:
+            keep = max(1, int(getattr(ModelConfig, "KEEP_CHECKPOINTS", 3)))
+            prefix = f"ckpt{sym_tag}_step_"
+            olds = sorted(
+                (_CHECKPOINT_DIR / f for f in os.listdir(_CHECKPOINT_DIR)
+                 if f.startswith(prefix) and f.endswith(".pt")),
+                key=lambda p: p.stat().st_mtime,
+            )
+            for old in olds[:-keep]:
+                old.unlink(missing_ok=True)
+        except OSError as exc:
+            tqdm.write(f"[警告] 清理旧检查点失败: {exc}")
         return path
 
     def load_checkpoint(self, path: str) -> int:

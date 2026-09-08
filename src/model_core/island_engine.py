@@ -44,6 +44,24 @@ class IslandAlphaEngine:
         self.global_best_island = -1
         self._step = 0
 
+    def tag_islands(self, symbol: str, timeframe=None, data_file=None, mode=None):
+        """入口脚本调用：为每个岛设置独立的训练曲线文件名与元数据。
+
+        各岛训练曲线存 training_history_{symbol}__islN.json，互不覆盖；
+        刻意不设 target_symbol——岛不写策略文件、不写检查点，
+        策略由本类在训练结束后统一保存。
+        """
+        for i, isl in enumerate(self.islands):
+            isl.history_tag = f"{symbol}__isl{i + 1}"
+            # 岛不支持续训，且多岛同品种检查点会互相覆盖，干脆不写
+            isl.save_checkpoints = False
+            if timeframe is not None:
+                isl.timeframe = timeframe
+            if data_file is not None:
+                isl.data_file = data_file
+            if mode is not None:
+                isl.mode = mode
+
     def _migrate_elites(self, step: int):
         """在所有 islands 之间交换 Top-K elite 公式。"""
         # 收集所有 island 的 elite
@@ -91,9 +109,9 @@ class IslandAlphaEngine:
     def train(self):
         """主训练循环：每个 island 轮流训练一个阶段，然后迁移 elite。"""
         total_steps = ModelConfig.TRAIN_STEPS
-        n_phases = total_steps // self.migration_interval
-        if n_phases == 0:
-            n_phases = 1
+        # 向上取整：例如 500 步 / 150 间隔，要跑 [0:150][150:300]
+        # [300:450][450:500] 四个阶段，不能漏掉最后 50 步。
+        n_phases = max(1, (total_steps + self.migration_interval - 1) // self.migration_interval)
 
         print(f"\n{'='*60}")
         print(f"  Island Alpha Training")
@@ -106,6 +124,10 @@ class IslandAlphaEngine:
             end = min((phase + 1) * self.migration_interval, total_steps)
 
             for i, isl in enumerate(self.islands):
+                if isl.stopped_early:
+                    print(f"\n>>> Phase {phase+1}/{n_phases} — Island {i+1}/{self.n_islands} "
+                          "已因长期无改进停止，跳过")
+                    continue
                 print(f"\n>>> Phase {phase+1}/{n_phases} — Island {i+1}/{self.n_islands} "
                       f"steps [{start}:{end}]")
                 # 每个 island 独立训练一个阶段

@@ -80,8 +80,8 @@ kline_cache_dir 里修改。你不需要手工制作或理解 Parquet 文件。
   src\data_pipeline\       数据加载与 MT5 分块拉取
   src\train_file.py        训练主程序（看板后台调用）
   src\mt5_train.py         "从 MT5 获取并训练"入口（周期可选）
+  src\train_island.py      岛模式训练程序（多种群探索 + 精英迁移）
   src\run_backtest.py      回测主程序
-  src\export_mt5_data.py   独立数据导出脚本
   src\tests\               单元测试（77 项）
   scripts\stop_all.ps1     stop.bat 背后的实际停止逻辑，不需要手动碰
 

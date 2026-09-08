@@ -877,33 +877,6 @@ def api_data_files():
     return {"data_dir": str(data_dir), "files": files}
 
 
-@app.post("/api/data/export_mt5")
-def api_export_mt5(payload: dict):
-    """从 MT5 导出指定周期 K 线到数据目录（供训练用）。"""
-    symbol = str(payload.get("symbol", "")).strip()
-    bars = int(payload.get("bars", 20000) or 20000)
-    timeframe = str(payload.get("timeframe", "H1") or "H1").upper()
-    if not symbol:
-        raise HTTPException(400, "缺少 symbol")
-    cfg = load_trader_config()
-    out_dir = cfg.get("kline_cache_dir", r"D:\K线数据")
-    code = (
-        "import sys; sys.path.insert(0, r'{src}');"
-        "import export_mt5_data as m;"
-        "ok = m.export_symbol('{sym}', {bars}, '{tf}', r'{out}');"
-        "sys.exit(0 if ok else 1)"
-    ).format(src=SRC, sym=symbol, bars=bars, tf=timeframe, out=out_dir)
-    log_file = LOGS_DIR / f"export_{symbol}_{int(time.time())}.log"
-    with open(log_file, "w", encoding="utf-8") as fh:
-        proc = subprocess.Popen(
-            [_venv_python(), "-c", code], cwd=str(ROOT),
-            stdout=fh, stderr=subprocess.STDOUT,
-            creationflags=CREATE_NO_WINDOW,
-        )
-    return {"ok": True, "pid": proc.pid, "log": str(log_file),
-            "message": "导出已在后台启动，稍后刷新数据文件列表"}
-
-
 # ── 训练 ────────────────────────────────────────────────────────────
 
 class JobManager:
@@ -993,6 +966,7 @@ def api_training_start(payload: dict):
     from_scratch = bool(payload.get("from_scratch"))
     steps = int(payload.get("steps", 0) or 0)
     timeframe = str(payload.get("timeframe", "H1") or "H1").upper()
+    islands = int(payload.get("islands", 0) or 0)
     if direct_mt5:
         symbol = str(payload.get("symbol", "")).strip()
         bars = int(payload.get("bars", 6000) or 6000)
@@ -1004,6 +978,8 @@ def api_training_start(payload: dict):
                "--bars", str(bars), "--timeframe", timeframe]
         if steps > 0:
             cmd.extend(["--steps", str(steps)])
+        if islands > 1:
+            cmd.extend(["--islands", str(islands)])
         if from_scratch:
             cmd.append("--from-scratch")
         data_file = "（由 MT5 直连获取）"
@@ -1012,8 +988,12 @@ def api_training_start(payload: dict):
         data_file = str(payload.get("data_file", "")).strip()
         if not data_file or not Path(data_file).exists():
             raise HTTPException(400, "数据文件不存在")
-        cmd = [_venv_python(), "-u", "src/train_file.py", "--data-file", data_file]
-        if from_scratch:
+        if islands > 1:
+            cmd = [_venv_python(), "-u", "src/train_island.py",
+                   "--data-file", data_file, "--islands", str(islands)]
+        else:
+            cmd = [_venv_python(), "-u", "src/train_file.py", "--data-file", data_file]
+        if from_scratch and islands <= 1:
             cmd.append("--from-scratch")
         if steps > 0:
             cmd.extend(["--steps", str(steps)])
@@ -1022,6 +1002,7 @@ def api_training_start(payload: dict):
     result = training_job.start(cmd, log_file, {
         "data_file": data_file, "direct_mt5": direct_mt5,
         "from_scratch": from_scratch, "steps": steps, "timeframe": timeframe,
+        "islands": islands,
     })
     result["log"] = str(log_file)
     return result
