@@ -233,14 +233,15 @@
               <button class="btn small ghost" onclick="setTrainPreset(60)">快速试跑 60 步</button>
               <button class="btn small ghost" onclick="setTrainPreset(9000)">正式训练 9000 步</button></div>
             <div class="field-help">单引擎默认自动续训：沿用上次训练成果继续（依据 checkpoints 里的检查点）。
-              步数填"总步数"——上次跑了 60 步想继续，这次就填 120 或 9000；想推倒重来才勾选"从头训练"。</div>
+              步数填"总步数"——上次跑了 60 步想继续，这次就填 120 或 9000；想推倒重来才勾选"从头训练"。
+              岛模式也会从最近一次完整迁移阶段续训；只有勾选"从头训练"才会清除对应的岛检查点。</div>
             <div class="row"><label class="hint"><input type="checkbox" id="tr-scratch"> 从头训练（清除检查点）</label></div>
             <div class="row"><label>训练引擎</label><select id="tr-islands">
               <option value="0" selected>单引擎（标准，支持续训）</option>
               <option value="3">岛模式 ×3（抗停滞，耗时×3）</option>
               <option value="5">岛模式 ×5（抗停滞，耗时×5）</option>
             </select></div>
-            <div class="field-help">岛模式：多个种群同时探索、定期交换精英公式，专治"分数卡住不涨"。全新搜索不支持续训，耗时按倍数增加；若连续多个停滞窗口仍无进步会自动结束并保留当前最优。</div>
+            <div class="field-help">岛模式：多个种群同时探索、定期交换精英公式，专治"分数卡住不涨"。支持从最近一次完整迁移阶段续训，耗时约为单引擎的岛数倍；若连续多个停滞窗口仍无进步会自动结束并保留当前最优。</div>
           </div>
         </div>
         <div class="step">
@@ -256,25 +257,18 @@
           </div>
         </div>
         <div class="card" style="background:var(--panel2);margin-top:12px">
-          <h3>从 MT5 获取数据</h3>
-          <div class="row"><label>品种</label><input type="text" id="ex-symbol" placeholder="ETHUSD_" value="ETHUSD_">
-            <label>周期</label><select id="ex-tf">
+          <h3>从 MT5 获取并训练</h3>
+          <div class="row"><label>品种</label><input type="text" id="mt5-symbol" placeholder="ETHUSD_" value="ETHUSD_">
+            <label>周期</label><select id="mt5-tf">
               <option>M5</option><option>M15</option><option>M30</option>
               <option selected>H1</option><option>H4</option><option>D1</option>
             </select>
-            <label>根数</label><input type="number" id="ex-bars" value="6000" min="800"></div>
+            <label>根数</label><input type="number" id="mt5-bars" value="6000" min="800">
+            <button class="btn small green" onclick="startDirectTraining()">从 MT5 获取并训练</button></div>
           <div class="row"><label>数据保存位置</label><input type="text" id="cfg-datadir" style="min-width:260px">
             <button class="btn small ghost" onclick="saveDataDir()">保存位置</button></div>
-          <div class="hint">MT5 终端打开后，用下方「直接训练」即可自动读取 K 线并保存到上面的目录。你不需要手动制作 Parquet 文件。</div>
+          <div class="hint">点击后自动按上面品种、周期、根数读取 MT5，保存到指定目录并开始训练；不会单独导出。训练完成后策略仍需到“策略库”手动绑定。</div>
           <div class="row"><button class="btn small ghost" onclick="loadDataFiles()">刷新数据文件</button></div>
-          <div class="row" style="margin-top:10px"><label>直接训练</label><input type="text" id="direct-symbol" placeholder="ETHUSD_" value="ETHUSD_">
-            <label>周期</label><select id="direct-tf">
-              <option>M5</option><option>M15</option><option>M30</option>
-              <option selected>H1</option><option>H4</option><option>D1</option>
-            </select>
-            <label>训练步数</label><input type="number" id="direct-steps" placeholder="60" min="10" value="60">
-            <button class="btn small green" onclick="startDirectTraining()">从 MT5 获取并训练</button></div>
-          <div class="hint">点击后自动完成：按所选周期读取 MT5 → 保存内部数据 → 开始训练。训练完成后策略仍需到“策略库”手动绑定。</div>
         </div>
       </div>
       <div class="card">
@@ -863,10 +857,10 @@ function updateTrainFileMeta(files) {
 }
 function setTrainPreset(steps) { $("tr-steps").value = steps; }
 async function startDirectTraining() {
-  const symbol = $("direct-symbol").value.trim();
-  const steps = parseInt($("direct-steps").value, 10) || 60;
-  const bars = parseInt($("ex-bars").value, 10) || 6000;
-  const timeframe = $("direct-tf").value;
+  const symbol = $("mt5-symbol").value.trim();
+  const steps = parseInt($("tr-steps").value, 10) || 60;
+  const bars = parseInt($("mt5-bars").value, 10) || 6000;
+  const timeframe = $("mt5-tf").value;
   const islands = parseInt($("tr-islands").value, 10) || 0;
   if (!symbol) { showMsg("tr-msg", "请填写 MT5 品种", false); return; }
   if (bars < 800) { showMsg("tr-msg", "K线数量至少 800 根", false); return; }

@@ -1078,7 +1078,7 @@ class AlphaEngine:
             # （如 1.05）但分布已死的"假健康"状态（有效词汇≈1），卡数百步。
             # 每满首个阈值后按 STAGNATION_WINDOW 间隔未刷新最优，就从
             # best_snapshot 强扰动。首个阈值比常规窗口小，避免短训练全程不介入。
-            if ModelConfig.STAG_HARD_RESTART and self._restart_count < ModelConfig.MAX_RESTARTS:
+            if ModelConfig.STAG_HARD_RESTART:
                 stag = step - self._best_update_step
                 first = max(1, int(getattr(ModelConfig, "STAG_HARD_RESTART_FIRST", ModelConfig.STAGNATION_WINDOW)))
                 interval = max(1, int(getattr(
@@ -1101,6 +1101,13 @@ class AlphaEngine:
                         break
                     self._restart_count += 1
                     noise = min(ModelConfig.NOISE_MAX, ModelConfig.RESTART_NOISE * 2.0)
+                    if self._restart_count > ModelConfig.MAX_RESTARTS:
+                        self._restart_count = ModelConfig.MAX_RESTARTS
+                        tqdm.write(
+                            f"[停滞重启上限] 第{step}步仍无提升，已达到 {ModelConfig.MAX_RESTARTS} 次；"
+                            "后续继续累计停滞窗口，达到阈值自动结束。"
+                        )
+                        continue
                     if self._best_snapshot is not None:
                         self.model.load_state_dict(self._best_snapshot)
                     with torch.no_grad():
@@ -1341,14 +1348,11 @@ class AlphaEngine:
 
     # ── Checkpoint save / load ────────────────────────────────────────────────
 
-    def save_checkpoint(self, step: int, path: str | None = None) -> str:
-        _CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
-        if path is None:
-            sym_tag = f"_{self.target_symbol}" if self.target_symbol else ""
-            path = str(_CHECKPOINT_DIR / f"ckpt{sym_tag}_step_{step:04d}.pt")
-        ckpt = {
+    def checkpoint_state(self, step: int) -> dict:
+        """返回可供单引擎和岛模式复用的完整续训状态。"""
+        return {
             "step":                 step,
-            "vocab_version":        VOCAB_VERSION,   # task 12.2: 版本校验所需
+            "vocab_version":        VOCAB_VERSION,
             "model_state_dict":     self.model.state_dict(),
             "optimizer_state_dict": self.opt.state_dict(),
             "best_score":           self.best_score,
@@ -1359,11 +1363,54 @@ class AlphaEngine:
             "elite_pool":           self._elite_pool,
             "elite_counter":        self._elite_counter,
             "restart_count":        self._restart_count,
+            "best_update_step":     self._best_update_step,
+            "stagnation_steps":     self._stagnation_steps,
+            "stag_windows_no_gain": self._stag_windows_no_gain,
+            "stopped_early":        self.stopped_early,
+            "reward_ema":           self._reward_ema,
+            "reward_ema_step":      self._reward_ema_step,
             "training_history":     {
                 k: v for k, v in self.training_history.items()
-                if k != '_low_entropy_streak'
+                if k != "_low_entropy_streak"
             },
         }
+
+    def restore_checkpoint_state(self, ckpt: dict) -> int:
+        """恢复 checkpoint_state() 写入的训练状态，返回已完成步数。"""
+        artifact_version = ckpt.get("vocab_version")
+        if artifact_version is None:
+            raise VocabVersionMismatchError(
+                "checkpoint 不含 vocab_version 字段（旧版产物），"
+                f"当前词表版本 {FORMULA_VOCAB.version!r}；需重新训练后加载"
+            )
+        FORMULA_VOCAB.verify(artifact_version)
+
+        self.model.load_state_dict(ckpt["model_state_dict"], strict=False)
+        self.opt.load_state_dict(ckpt["optimizer_state_dict"])
+        self.best_score = ckpt.get("best_score", -float("inf"))
+        self.best_formula = ckpt.get("best_formula")
+        self._best_snapshot = ckpt.get("best_snapshot")
+        self.factor_pool = ckpt.get("factor_pool", [])
+        self._factor_pool_counter = ckpt.get("factor_pool_counter", 0)
+        self._elite_pool = self._dedup_elite_pool(ckpt.get("elite_pool", []))
+        self._elite_counter = ckpt.get("elite_counter", 0)
+        self._restart_count = ckpt.get("restart_count", 0)
+        self._best_update_step = ckpt.get("best_update_step", 0)
+        self._stagnation_steps = ckpt.get("stagnation_steps", 0)
+        self._stag_windows_no_gain = ckpt.get("stag_windows_no_gain", 0)
+        self.stopped_early = bool(ckpt.get("stopped_early", False))
+        self._reward_ema = ckpt.get("reward_ema")
+        self._reward_ema_step = ckpt.get("reward_ema_step", 0)
+        for k, v in ckpt.get("training_history", {}).items():
+            self.training_history[k] = v
+        return int(ckpt.get("step", 0))
+
+    def save_checkpoint(self, step: int, path: str | None = None) -> str:
+        _CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
+        if path is None:
+            sym_tag = f"_{self.target_symbol}" if self.target_symbol else ""
+            path = str(_CHECKPOINT_DIR / f"ckpt{sym_tag}_step_{step:04d}.pt")
+        ckpt = self.checkpoint_state(step)
         # P1-3: 原子写入（tmp + os.replace），避免 Ctrl+C / OOM 打断导致
         # checkpoint 文件截断损坏——既丢新最优也丢旧最优
         tmp_path = path + ".tmp"
@@ -1388,36 +1435,7 @@ class AlphaEngine:
     def load_checkpoint(self, path: str) -> int:
         ckpt = torch.load(path, map_location=ModelConfig.DEVICE)
 
-        # ── Task 12.2：版本校验（R3.7）──────────────────────────────────────
-        # 从 checkpoint 读取 vocab_version；若字段缺失（旧版 checkpoint），视为
-        # 版本不匹配并抛错——拒绝加载、不消费任何 token。
-        artifact_version = ckpt.get("vocab_version")
-        if artifact_version is None:
-            raise VocabVersionMismatchError(
-                f"checkpoint '{path}' 不含 vocab_version 字段（旧版产物），"
-                f"当前词表版本 {FORMULA_VOCAB.version!r}；需重新训练后加载"
-            )
-        # verify() 版本不匹配时抛 VocabVersionMismatchError，拒绝加载
-        FORMULA_VOCAB.verify(artifact_version)
-        # ── 版本校验通过，继续加载 ────────────────────────────────────────
-
-        self.model.load_state_dict(ckpt["model_state_dict"], strict=False)
-        self.opt.load_state_dict(ckpt["optimizer_state_dict"])
-        self.best_score          = ckpt.get("best_score",  -float('inf'))
-        self.best_formula        = ckpt.get("best_formula", None)
-        self._best_snapshot      = ckpt.get("best_snapshot", None)
-        self.factor_pool         = ckpt.get("factor_pool", [])
-        self._factor_pool_counter = ckpt.get("factor_pool_counter", 0)
-        self._elite_pool         = ckpt.get("elite_pool", [])
-        self._elite_counter      = ckpt.get("elite_counter", 0)
-        self._restart_count      = ckpt.get("restart_count", 0)
-        for k, v in ckpt.get("training_history", {}).items():
-            self.training_history[k] = v
-
-        # 清理 elite pool 中的重复条目（保留各公式的最高分版本）
-        self._elite_pool = self._dedup_elite_pool(self._elite_pool)
-
-        completed = ckpt.get("step", 0)
+        completed = self.restore_checkpoint_state(ckpt)
         tqdm.write(f"[检查点] 已从 {path} 恢复。"
                    f" 当前步={completed}  最优={self.best_score:.4f}"
                    f"  精英池={len(self._elite_pool)}（去重后）")

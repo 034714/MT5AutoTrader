@@ -11,6 +11,8 @@ CPU 训练下串行轮流训练每个 island 一个小阶段效率更高，且�
 import copy
 import heapq
 import json
+import os
+import random
 from pathlib import Path
 
 import torch
@@ -43,6 +45,8 @@ class IslandAlphaEngine:
         self.global_best_formula = None
         self.global_best_island = -1
         self._step = 0
+        self.checkpoint_tag: str | None = None
+        self.global_history = {"step": [], "best_score": []}
 
     def tag_islands(self, symbol: str, timeframe=None, data_file=None, mode=None):
         """入口脚本调用：为每个岛设置独立的训练曲线文件名与元数据。
@@ -51,9 +55,10 @@ class IslandAlphaEngine:
         刻意不设 target_symbol——岛不写策略文件、不写检查点，
         策略由本类在训练结束后统一保存。
         """
+        self.checkpoint_tag = symbol
         for i, isl in enumerate(self.islands):
             isl.history_tag = f"{symbol}__isl{i + 1}"
-            # 岛不支持续训，且多岛同品种检查点会互相覆盖，干脆不写
+            # 岛模式由管理器写复合检查点，单岛不写自己的检查点，避免互相覆盖
             isl.save_checkpoints = False
             if timeframe is not None:
                 isl.timeframe = timeframe
@@ -61,6 +66,64 @@ class IslandAlphaEngine:
                 isl.data_file = data_file
             if mode is not None:
                 isl.mode = mode
+
+    def save_checkpoint(self, step: int, path: str | None = None) -> str:
+        """在完整迁移阶段结束后保存所有岛的复合状态。"""
+        ckpt_dir = Path("checkpoints")
+        ckpt_dir.mkdir(parents=True, exist_ok=True)
+        tag = self.checkpoint_tag or "unknown"
+        if path is None:
+            path = str(ckpt_dir / f"island_ckpt_{tag}_step_{step:04d}.pt")
+        payload = {
+            "kind": "island",
+            "step": step,
+            "vocab_version": self.islands[0].checkpoint_state(step)["vocab_version"],
+            "n_islands": self.n_islands,
+            "migration_interval": self.migration_interval,
+            "migration_top_k": self.migration_top_k,
+            "global_best_score": self.global_best_score,
+            "global_best_formula": self.global_best_formula,
+            "global_best_island": self.global_best_island,
+            "global_history": self.global_history,
+            "islands": [isl.checkpoint_state(step) for isl in self.islands],
+            "torch_rng_state": torch.get_rng_state(),
+            "python_rng_state": random.getstate(),
+        }
+        tmp = path + ".tmp"
+        torch.save(payload, tmp)
+        os.replace(tmp, path)
+        keep = max(1, int(getattr(ModelConfig, "KEEP_CHECKPOINTS", 3)))
+        prefix = f"island_ckpt_{tag}_step_"
+        files = sorted((ckpt_dir / p for p in os.listdir(ckpt_dir)
+                        if p.startswith(prefix) and p.endswith(".pt")),
+                       key=lambda p: p.stat().st_mtime)
+        for old in files[:-keep]:
+            old.unlink(missing_ok=True)
+        print(f"[岛检查点] → {path}（步数={step}，保留最近 {keep} 个）")
+        return path
+
+    def load_checkpoint(self, path: str) -> int:
+        """恢复复合岛检查点，要求岛数和迁移设置一致。"""
+        ckpt = torch.load(path, map_location=ModelConfig.DEVICE)
+        if ckpt.get("kind") != "island":
+            raise ValueError(f"不是岛模式检查点: {path}")
+        if int(ckpt.get("n_islands", 0)) != self.n_islands:
+            raise ValueError("检查点岛数与本次训练不一致")
+        if int(ckpt.get("migration_interval", 0)) != self.migration_interval:
+            raise ValueError("检查点迁移间隔与本次训练不一致")
+        for isl, state in zip(self.islands, ckpt.get("islands", [])):
+            isl.restore_checkpoint_state(state)
+        self.global_best_score = ckpt.get("global_best_score", -float("inf"))
+        self.global_best_formula = ckpt.get("global_best_formula")
+        self.global_best_island = int(ckpt.get("global_best_island", -1))
+        if ckpt.get("torch_rng_state") is not None:
+            torch.set_rng_state(ckpt["torch_rng_state"])
+        if ckpt.get("python_rng_state") is not None:
+            random.setstate(ckpt["python_rng_state"])
+        self.global_history = ckpt.get("global_history", {"step": [], "best_score": []})
+        step = int(ckpt.get("step", 0))
+        print(f"[岛检查点] 已恢复 {path}：步数={step}，全局最优={self.global_best_score:.4f}")
+        return step
 
     def _migrate_elites(self, step: int):
         """在所有 islands 之间交换 Top-K elite 公式。"""
@@ -106,29 +169,35 @@ class IslandAlphaEngine:
                 self.global_best_formula = isl.best_formula
                 self.global_best_island = i
 
-    def train(self):
+    def train(self, start_step: int = 0):
         """主训练循环：每个 island 轮流训练一个阶段，然后迁移 elite。"""
         total_steps = ModelConfig.TRAIN_STEPS
-        # 向上取整：例如 500 步 / 150 间隔，要跑 [0:150][150:300]
-        # [300:450][450:500] 四个阶段，不能漏掉最后 50 步。
-        n_phases = max(1, (total_steps + self.migration_interval - 1) // self.migration_interval)
+        if start_step >= total_steps:
+            print(f"[岛训练] 起始步 {start_step} 已达目标步 {total_steps}，无需继续训练。")
+            return
+        # 检查点是在所有岛完成、迁移和同步后保存的，即使目标步数不是
+        # migration_interval 的整数倍也可以安全续训；下一阶段从当前步继续。
+        interval = max(1, int(self.migration_interval))
+        n_phases = max(1, (total_steps - start_step + interval - 1) // interval)
+        phase_no = start_step // interval + 1
 
         print(f"\n{'='*60}")
         print(f"  Island Alpha Training")
         print(f"  islands={self.n_islands}  migration_every={self.migration_interval}")
-        print(f"  total_steps={total_steps}  phases={n_phases}")
+        print(f"  total_steps={total_steps}  remaining_phases={n_phases}")
         print(f"{'='*60}\n")
 
-        for phase in range(n_phases):
-            start = phase * self.migration_interval
-            end = min((phase + 1) * self.migration_interval, total_steps)
+        start = start_step
+        while start < total_steps:
+            end = min(((start // interval) + 1) * interval, total_steps)
+            phase_label = f"第{phase_no}阶段"
 
             for i, isl in enumerate(self.islands):
                 if isl.stopped_early:
-                    print(f"\n>>> Phase {phase+1}/{n_phases} — Island {i+1}/{self.n_islands} "
+                    print(f"\n>>> {phase_label} — Island {i+1}/{self.n_islands} "
                           "已因长期无改进停止，跳过")
                     continue
-                print(f"\n>>> Phase {phase+1}/{n_phases} — Island {i+1}/{self.n_islands} "
+                print(f"\n>>> {phase_label} — Island {i+1}/{self.n_islands} "
                       f"steps [{start}:{end}]")
                 # 每个 island 独立训练一个阶段
                 isl.train(start_step=start, end_step=end,
@@ -152,6 +221,14 @@ class IslandAlphaEngine:
                         # 同步模型 snapshot，restart 时能从全局最优恢复
                         if best_isl._best_snapshot is not None:
                             isl._best_snapshot = copy.deepcopy(best_isl._best_snapshot)
+
+            # 只有所有岛完成、迁移和全局最优同步都落定后才保存，续训状态一致。
+            self._step = end
+            self.global_history["step"].append(end)
+            self.global_history["best_score"].append(self.global_best_score)
+            self.save_checkpoint(end)
+            start = end
+            phase_no += 1
 
         # 最终保存全局最优
         self._update_global_best()

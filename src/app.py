@@ -993,7 +993,7 @@ def api_training_start(payload: dict):
                    "--data-file", data_file, "--islands", str(islands)]
         else:
             cmd = [_venv_python(), "-u", "src/train_file.py", "--data-file", data_file]
-        if from_scratch and islands <= 1:
+        if from_scratch:
             cmd.append("--from-scratch")
         if steps > 0:
             cmd.extend(["--steps", str(steps)])
@@ -1030,6 +1030,15 @@ def api_training_curve(symbol: str = ""):
         arg_file = str(training_job.args.get("data_file") or "")
         candidates = []
         if arg_file and arg_file.endswith(".parquet"):
+            try:
+                from data_pipeline.parquet_manager import parse_parquet_filename
+                symbol, _timeframe = parse_parquet_filename(arg_file)
+            except (ValueError, OSError):
+                stem = Path(arg_file).stem
+                symbol = stem.rsplit("_", 1)[0] + "_"
+            island = int(training_job.args.get("islands", 0) or 0) > 1
+            suffix = "_island" if island else ""
+            candidates.append(ROOT / f"training_history_{symbol}{suffix}.json")
             candidates.append(ROOT / f"training_history_{Path(arg_file).stem}.json")
         candidates.extend(sorted(
             ROOT.glob("training_history_*.json"),

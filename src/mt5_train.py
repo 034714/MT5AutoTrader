@@ -71,7 +71,9 @@ def main() -> int:
                               Path(Config.KLINE_CACHE_DIR))
         if args.islands > 1:
             from train_island import train_island_from_file
-            result = train_island_from_file(str(data_path), n_islands=args.islands)
+            result = train_island_from_file(
+                str(data_path), n_islands=args.islands, from_scratch=args.from_scratch,
+            )
         else:
             result = train_from_file(str(data_path), from_scratch=args.from_scratch)
         return 0 if result is not None else 1

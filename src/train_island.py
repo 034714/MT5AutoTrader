@@ -8,8 +8,8 @@ train_island.py — 岛模式训练（多起点并行 + 精英迁移）
 MIGRATION_INTERVAL 步互换精英公式，专治单引擎"过早收敛→反复重启"的
 停滞问题。代价：耗时约为单引擎的 N 倍（串行轮流训练）。
 
-岛模式为全新搜索，不做检查点续训；已有 best_{symbol}.json 会作为
-分数下限保留（仅更优才覆盖）。
+岛模式为多群体搜索，支持从最近一次完整迁移阶段续训；已有 best_{symbol}.json 会作为最终保存保护，
+低分新结果不会覆盖旧策略。
 """
 from __future__ import annotations
 
@@ -32,7 +32,9 @@ from model_core.island_engine import IslandAlphaEngine
 from train_file import _save_strategy
 
 
-def train_island_from_file(data_file: str, *, n_islands: int | None = None) -> IslandAlphaEngine | None:
+def train_island_from_file(
+    data_file: str, *, n_islands: int | None = None, from_scratch: bool = False,
+) -> IslandAlphaEngine | None:
     info = inspect_parquet_file(data_file)
     symbol = info["symbol"]
     timeframe = info["timeframe"]
@@ -65,6 +67,27 @@ def train_island_from_file(data_file: str, *, n_islands: int | None = None) -> I
         mode="parquet_file",
     )
 
+    # 岛模式检查点仅在完整迁移阶段结束后写入；自动续训从最近阶段恢复。
+    ckpt_dir = pathlib.Path("checkpoints")
+    ckpt_pattern = f"island_ckpt_{symbol}_step_*.pt"
+    ckpts = sorted(ckpt_dir.glob(ckpt_pattern)) if ckpt_dir.exists() else []
+    # 岛模式使用独立的全局曲线文件，不覆盖单引擎训练历史。
+    island_history_path = pathlib.Path(f"training_history_{symbol}_island.json")
+    start_step = 0
+    if from_scratch:
+        for p in ckpts:
+            p.unlink(missing_ok=True)
+        for p in pathlib.Path(".").glob(f"training_history_{symbol}__isl*.json"):
+            p.unlink(missing_ok=True)
+        island_history_path.unlink(missing_ok=True)
+        print(f"  [从头训练] 已清除 {len(ckpts)} 个岛检查点和岛训练曲线")
+    elif ckpts:
+        try:
+            start_step = itrain.load_checkpoint(str(ckpts[-1]))
+            print(f"  [岛续训] 从 {ckpts[-1]} 恢复，起始步={start_step}")
+        except Exception as exc:
+            print(f"  [警告] 岛检查点加载失败: {exc}，将从头开始")
+
     # 岛内不设置旧策略分数下限：否则界面从第 1 步起永远显示旧高分，
     # 无法判断新一轮搜索有没有真实进展。旧策略保护只在最终 _save_strategy
     # 时执行，低分新结果绝不会覆盖磁盘上的已有策略。
@@ -79,8 +102,16 @@ def train_island_from_file(data_file: str, *, n_islands: int | None = None) -> I
             pass
 
     t0 = time.time()
-    itrain.train()
+    itrain.train(start_step=start_step)
     elapsed = time.time() - t0
+    # 给训练页提供岛模式的全局最佳曲线（按迁移阶段一条点），不混入单岛曲线。
+    if itrain.global_history.get("step"):
+        island_history_path.write_text(
+            json.dumps({
+                "step": itrain.global_history["step"],
+                "best_score": itrain.global_history["best_score"],
+            }, ensure_ascii=False), encoding="utf-8",
+        )
 
     # island_engine 内部会写一个固定名 best_island_strategy.json（多品种会互相
     # 覆盖且无消费方）；真正的策略由下面按品种保存，删掉避免误导
@@ -111,6 +142,7 @@ if __name__ == "__main__":
     parser.add_argument("--data-file", required=True)
     parser.add_argument("--islands", type=int, default=0)
     parser.add_argument("--steps", type=int, default=0)
+    parser.add_argument("--from-scratch", action="store_true")
     args = parser.parse_args()
 
     if args.steps > 0:
@@ -119,6 +151,8 @@ if __name__ == "__main__":
     n_islands = args.islands if args.islands > 0 else None
     if n_islands is None and ModelConfig.N_ISLANDS <= 1:
         n_islands = 3  # 单岛没有意义，默认 3
-    eng = train_island_from_file(args.data_file, n_islands=n_islands)
+    eng = train_island_from_file(
+        args.data_file, n_islands=n_islands, from_scratch=args.from_scratch,
+    )
     if eng is None:
         sys.exit(1)
