@@ -6,6 +6,7 @@ import os
 import pathlib
 import random
 import sys
+import time
 
 import torch
 
@@ -729,6 +730,7 @@ class AlphaEngine:
                                   mininterval=5.0)
         low_entropy_streak = 0
         prev_init_dist     = None  # 用于计算相邻步分布差异 KL
+        run_t0             = time.time()  # 本次续训起点，用于日志里显示实际步速
 
         for step in pbar:
             # ── Part A: Sample n_new new formulas ────────────────────
@@ -1081,6 +1083,12 @@ class AlphaEngine:
             if self.save_checkpoints and ((step + 1) % 20 == 0 or (step + 1) == end_step):
                 ckpt = self.save_checkpoint(step + 1)
                 tqdm.write(f"[检查点] → {ckpt} (最优={self.best_score:.3f})")
+                # 步速指示器：帮你分辨「训练变慢」是代码问题还是机器被拖慢
+                # （电池/降频/后台抢占时这里会明显变大；正常约 10-17 秒/步）
+                done = step + 1 - start_step
+                elapsed = time.time() - run_t0
+                tqdm.write(f"    步速 {elapsed/max(1,done):.1f} 秒/步"
+                           f"（本次已跑 {done} 步，累计 {elapsed/60:.0f} 分钟）")
 
             # ── Part F: Migration hook（多岛训练时交换精英）────────────
             if migration_hook is not None and (step + 1) % ModelConfig.MIGRATION_INTERVAL == 0:

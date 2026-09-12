@@ -196,17 +196,33 @@ class IslandAlphaEngine:
             end = min(((start // interval) + 1) * interval, total_steps)
             phase_label = f"第{phase_no}阶段"
 
+            active = [(i, isl) for i, isl in enumerate(self.islands)
+                      if not isl.stopped_early]
             for i, isl in enumerate(self.islands):
                 if isl.stopped_early:
                     print(f"\n>>> {phase_label} — Island {i+1}/{self.n_islands} "
                           "已因长期无改进停止，跳过")
-                    continue
+            for i, _ in active:
                 print(f"\n>>> {phase_label} — Island {i+1}/{self.n_islands} "
                       f"steps [{start}:{end}]")
-                # 每个 island 独立训练一个阶段
+
+            def _run_phase(isl: AlphaEngine) -> None:
+                # 每岛独立训练一个阶段（岛间互不共享可变状态，可安全并行）
                 isl.train(start_step=start, end_step=end,
                           migration_hook=None, verbose_header=False)
-                self._update_global_best()
+
+            if ModelConfig.ISLAND_PARALLEL and len(active) > 1:
+                # 岛级并行：PyTorch CPU 算子释放 GIL，整岛粒度可真并行；
+                # 三个岛同时跑，阶段墙钟时间 ≈ 最慢一岛，而非三岛之和。
+                from concurrent.futures import ThreadPoolExecutor
+                with ThreadPoolExecutor(max_workers=len(active)) as pool:
+                    futures = [pool.submit(_run_phase, isl) for _, isl in active]
+                    for fut in futures:
+                        fut.result()  # 任一岛异常则向上抛，终止训练
+            else:
+                for _, isl in active:
+                    _run_phase(isl)
+            self._update_global_best()
 
             # 阶段结束：迁移 elite
             self._migrate_elites(end)
