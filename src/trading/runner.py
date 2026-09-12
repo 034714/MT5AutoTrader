@@ -316,6 +316,12 @@ class TradingRunner:
         self.book.record_action(f"{symbol} 平仓失败（仍有 {len(remaining)} 笔持仓）")
         return False
 
+    def _tf_for_strategy(self, strategy_path: str) -> tuple[int, int, str]:
+        """取该策略训练周期的 (MT5常量, 秒数, 字符串)；未知按 H1。"""
+        strategy = self.strategies.get(strategy_path) or {}
+        tf_str = str(strategy.get("timeframe") or "H1").upper()
+        return Config.get_timeframe(tf_str), Config.timeframe_seconds(tf_str), tf_str
+
     def _open_position(self, symbol: str, direction: str, binding: dict,
                        strategy_path: str) -> bool:
         """开仓（带初始止损）。成功返回 True 并写台账。"""
@@ -352,7 +358,8 @@ class TradingRunner:
             from trading.sr import SRParams, sl_tp_for_trade
             sr_params = SRParams.from_config()
             if sr_params.enabled:
-                rates = self.client.copy_rates(symbol, Config.TIMEFRAME, self._signal_bars)
+                tf_const, _tf_secs, _tf_str = self._tf_for_strategy(strategy_path)
+                rates = self.client.copy_rates(symbol, tf_const, self._signal_bars)
                 if rates is not None and len(rates) >= 120:
                     plan = sl_tp_for_trade(
                         symbol, direction, ref_price, rates[:-1], sr_params,
@@ -674,7 +681,8 @@ class TradingRunner:
         """存量仓位补一份"止盈一半"计划（只算一次，结果写入台账）。"""
         plan: dict = {"price": 0.0, "done": True, "skipped": "init"}
         try:
-            rates = self.client.copy_rates(symbol, Config.TIMEFRAME, self._signal_bars)
+            tf_const, _tf_secs, _tf_str = self._tf_for_strategy(info.get("strategy", ""))
+            rates = self.client.copy_rates(symbol, tf_const, self._signal_bars)
             lot = float(info.get("volume") or 0)
             if rates is None or len(rates) < 120 or lot <= 0:
                 info["sr_partial"] = plan
@@ -798,7 +806,13 @@ class TradingRunner:
             }
             return
 
-        rates = self.client.copy_rates(symbol, Config.TIMEFRAME, self._signal_bars)
+        # 按策略自身训练周期拉取 K 线（H1 策略用 H1，M30 策略用 M30），
+        # 不再固定用 Config.TIMEFRAME，避免不同周期策略用错周期算信号。
+        tf_str = str(strategy.get("timeframe") or "H1").upper()
+        tf_const = Config.get_timeframe(tf_str)
+        tf_secs = Config.timeframe_seconds(tf_str)
+
+        rates = self.client.copy_rates(symbol, tf_const, self._signal_bars)
         if rates is None or len(rates) < 2:
             self._last_signal_info[symbol] = {
                 "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -819,7 +833,11 @@ class TradingRunner:
         self._last_bar_time[symbol] = last_closed_time
         signal_entry = {
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "bar_time": last_closed_time,
+            # MT5 的 bar time 是「开盘时间」；H1 的 13:00 那根要到 14:00 才收盘。
+            # 这里换算成收盘时间显示，避免总览页看起来「永远晚一小时」。
+            "bar_time": last_closed_time + tf_secs,
+            "bar_open_time": last_closed_time,
+            "timeframe": tf_str,
             "direction": signal.get("direction", "FLAT"),
             "strength": signal.get("strength", 0.0),
             "position": signal.get("position", 0.0),
@@ -829,7 +847,8 @@ class TradingRunner:
         }
         self._last_signal_info[symbol] = signal_entry
         logger.info(
-            f"[信号] {symbol} 收盘bar={last_closed_time} {signal.get('direction')} "
+            f"[信号] {symbol} {tf_str} 收盘bar={last_closed_time + tf_secs} "
+            f"{signal.get('direction')} "
             f"强度={signal.get('strength')} ({signal.get('state')} {signal.get('message','')})"
         )
 

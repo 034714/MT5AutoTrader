@@ -26,17 +26,19 @@ class IslandAlphaEngine:
 
     def __init__(self, data_manager, n_islands: int | None = None,
                  migration_interval: int | None = None,
-                 migration_top_k: int | None = None):
+                 migration_top_k: int | None = None,
+                 base_seed: int | None = None):
         self.data_manager = data_manager
         self.n_islands = n_islands or ModelConfig.N_ISLANDS
         self.migration_interval = migration_interval or ModelConfig.MIGRATION_INTERVAL
         self.migration_top_k = migration_top_k or ModelConfig.MIGRATION_TOP_K
 
         self.islands: list[AlphaEngine] = []
+        seed0 = base_seed if base_seed is not None else 2026
         for i in range(self.n_islands):
             isl = AlphaEngine(data_manager=data_manager)
             # 给每个 island 不同的随机初始化，增加多样性
-            torch.manual_seed(2026 + i * 17)
+            torch.manual_seed(seed0 + i * 17)
             isl.model = isl.model.__class__().to(ModelConfig.DEVICE)
             isl.opt = torch.optim.AdamW(isl.model.parameters(), lr=1e-3)
             self.islands.append(isl)
@@ -51,13 +53,15 @@ class IslandAlphaEngine:
     def tag_islands(self, symbol: str, timeframe=None, data_file=None, mode=None):
         """入口脚本调用：为每个岛设置独立的训练曲线文件名与元数据。
 
-        各岛训练曲线存 training_history_{symbol}__islN.json，互不覆盖；
+        文件名标签 = 品种_周期（与单引擎命名一致），不同周期互不覆盖；
+        各岛训练曲线存 training_history_{tag}__islN.json，互不覆盖；
         刻意不设 target_symbol——岛不写策略文件、不写检查点，
         策略由本类在训练结束后统一保存。
         """
-        self.checkpoint_tag = symbol
+        tag = f"{symbol}_{timeframe}" if timeframe else symbol
+        self.checkpoint_tag = tag
         for i, isl in enumerate(self.islands):
-            isl.history_tag = f"{symbol}__isl{i + 1}"
+            isl.history_tag = f"{tag}__isl{i + 1}"
             # 岛模式由管理器写复合检查点，单岛不写自己的检查点，避免互相覆盖
             isl.save_checkpoints = False
             if timeframe is not None:

@@ -56,16 +56,16 @@ def main() -> int:
     parser.add_argument("--symbol", required=True)
     parser.add_argument("--bars", type=int, default=6000)
     parser.add_argument("--timeframe", default="H1")
-    parser.add_argument("--steps", type=int, default=0)
+    parser.add_argument("--steps", type=int, default=0,
+                        help="本次新增步数；0=沿用默认总步数")
     parser.add_argument("--islands", type=int, default=0,
                         help=">1 时用岛模式训练（多群体+精英迁移，耗时约为单引擎的岛数倍）")
+    parser.add_argument("--resume-file", default=None,
+                        help="指定续训检查点文件；不填则自动用最新检查点")
     parser.add_argument("--from-scratch", action="store_true")
     args = parser.parse_args()
     if args.bars < 800:
         parser.error("--bars 至少需要 800")
-    if args.steps > 0:
-        from model_core.config import ModelConfig
-        ModelConfig.TRAIN_STEPS = args.steps
     try:
         data_path = fetch_mt5(args.symbol, args.bars, args.timeframe,
                               Path(Config.KLINE_CACHE_DIR))
@@ -73,9 +73,11 @@ def main() -> int:
             from train_island import train_island_from_file
             result = train_island_from_file(
                 str(data_path), n_islands=args.islands, from_scratch=args.from_scratch,
+                additional_steps=args.steps, resume_file=args.resume_file,
             )
         else:
-            result = train_from_file(str(data_path), from_scratch=args.from_scratch)
+            result = train_from_file(str(data_path), from_scratch=args.from_scratch,
+                                     additional_steps=args.steps, resume_file=args.resume_file)
         return 0 if result is not None else 1
     except Exception as exc:
         print(f"[错误] MT5 直连训练失败: {exc}")

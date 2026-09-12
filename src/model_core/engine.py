@@ -51,14 +51,16 @@ except ImportError:
     _CHECKPOINT_DIR = pathlib.Path("checkpoints")
 
 
-def _strategy_file_for_symbol(symbol: str | None) -> str:
-    """返回该品种对应的策略文件路径。
+def _strategy_file_for_symbol(symbol: str | None, timeframe: str | None = None) -> str:
+    """返回该品种+周期对应的策略文件路径。
 
-    单品种训练时使用 strategies/best_{symbol}.json，
+    带周期时用 strategies/best_{symbol}_{tf}.json（如 best_BTCUSD__H1.json），
+    不同周期互不覆盖；不带周期时退回 best_{symbol}.json；
     多品种/未指定品种时回退到默认路径。
     """
     if symbol:
-        return str(pathlib.Path("strategies") / f"best_{symbol}.json")
+        stem = f"{symbol}_{timeframe}" if timeframe else symbol
+        return str(pathlib.Path("strategies") / f"best_{stem}.json")
     return _STRATEGY_FILE
 
 
@@ -238,6 +240,7 @@ class AlphaEngine:
         self.data_manager  = data_manager
         self.n_folds       = n_folds
         self.target_symbol = target_symbol   # None = 多品种模式，str = 单品种模式
+        self.timeframe: str | None = None    # 单品种训练周期（train_file 设置）
         self.model   = AlphaGPT().to(ModelConfig.DEVICE)
         self.opt     = torch.optim.AdamW(self.model.parameters(), lr=1e-3)
 
@@ -303,6 +306,16 @@ class AlphaEngine:
         self._eval_workers = 1
         if ModelConfig.PARALLEL_EVAL:
             self._init_parallel_eval()
+
+    # ── 文件命名：品种 + 周期，避免不同周期互相覆盖 ────────────────────────
+
+    def _file_tag(self) -> str | None:
+        """单品种训练时的文件名标签：有周期则 '{symbol}_{tf}'，否则 '{symbol}'。"""
+        if not self.target_symbol:
+            return None
+        if self.timeframe:
+            return f"{self.target_symbol}_{self.timeframe}"
+        return self.target_symbol
 
     # ── 并行评估初始化 ──────────────────────────────────────────────────────
 
@@ -1054,10 +1067,11 @@ class AlphaEngine:
                 strategy_data = {
                     "vocab_version": VOCAB_VERSION,
                     "symbol": self.target_symbol,
+                    "timeframe": self.timeframe,
                     "formula": self.best_formula,
                     "best_score": self.best_score,
                 }
-                save_path = _strategy_file_for_symbol(self.target_symbol)
+                save_path = _strategy_file_for_symbol(self.target_symbol, self.timeframe)
                 pathlib.Path(save_path).parent.mkdir(parents=True, exist_ok=True)
                 with open(save_path, "w") as fp:
                     json.dump(strategy_data, fp, indent=2)
@@ -1222,10 +1236,11 @@ class AlphaEngine:
                 strategy_data = {
                     "vocab_version": VOCAB_VERSION,
                     "symbol": self.target_symbol,
+                    "timeframe": self.timeframe,
                     "formula": self.best_formula,
                     "best_score": self.best_score,
                 }
-                save_path = _strategy_file_for_symbol(self.target_symbol)
+                save_path = _strategy_file_for_symbol(self.target_symbol, self.timeframe)
                 pathlib.Path(save_path).parent.mkdir(parents=True, exist_ok=True)
                 # P1-3: 原子写入
                 tmp_path = save_path + ".tmp"
@@ -1236,7 +1251,7 @@ class AlphaEngine:
             sym_tag = f"[{self.target_symbol}] " if self.target_symbol else ""
             self.training_history.pop('_low_entropy_streak', None)
             hist_path = (
-                f"training_history_{self.target_symbol}.json"
+                f"training_history_{self._file_tag()}.json"
                 if self.target_symbol else "training_history.json"
             )
             # P1-3: 原子写入
@@ -1267,7 +1282,7 @@ class AlphaEngine:
         if not self.target_symbol and not self.history_tag:
             return
         try:
-            sym = self.history_tag or self.target_symbol
+            sym = self.history_tag or self._file_tag()
             hist_path = f"training_history_{sym}.json"
             payload = {
                 k: v for k, v in self.training_history.items()
@@ -1298,7 +1313,7 @@ class AlphaEngine:
             return
         try:
             from .vocab import VOCAB_VERSION
-            save_path = _strategy_file_for_symbol(self.target_symbol)
+            save_path = _strategy_file_for_symbol(self.target_symbol, self.timeframe)
             pathlib.Path(save_path).parent.mkdir(parents=True, exist_ok=True)
 
             existing: dict = {}
@@ -1314,6 +1329,7 @@ class AlphaEngine:
             strategy_data = {
                 "vocab_version": VOCAB_VERSION,
                 "symbol": self.target_symbol,
+                "timeframe": self.timeframe,
                 "formula": self.best_formula,
                 "best_score": self.best_score,
                 "formula_decoded": self._decode_formula(self.best_formula),
@@ -1407,8 +1423,11 @@ class AlphaEngine:
 
     def save_checkpoint(self, step: int, path: str | None = None) -> str:
         _CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
+        # 检查点文件名带周期（ckpt_{symbol}_{tf}_step_*.pt），不同周期互不覆盖；
+        # 同时作为清理前缀，保证只清理本品种本周期的检查点。
+        tag = self._file_tag()
+        sym_tag = f"_{tag}" if tag else ""
         if path is None:
-            sym_tag = f"_{self.target_symbol}" if self.target_symbol else ""
             path = str(_CHECKPOINT_DIR / f"ckpt{sym_tag}_step_{step:04d}.pt")
         ckpt = self.checkpoint_state(step)
         # P1-3: 原子写入（tmp + os.replace），避免 Ctrl+C / OOM 打断导致

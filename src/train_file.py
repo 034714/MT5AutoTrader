@@ -3,14 +3,20 @@ train_file.py — 从单个 Parquet K 线文件训练
 
 用法:
     python train_file.py --data-file D:\\K线数据\\AAPL_H1.parquet
+    python train_file.py --data-file ... --steps 200            # 本次再跑 200 步
+    python train_file.py --data-file ... --resume-file checkpoints\\ckpt_X_step_0200.pt
+    python train_file.py --data-file ... --from-scratch          # 清除检查点、换随机种子从头搜索
 
-文件名格式: {品种}_{周期}.parquet，例如 AAPL_H1.parquet、US30.cash_H1.parquet
+文件名格式: {品种}_{周期}.parquet，例如 AAPL_H1.parquet、BTCUSD__H1.parquet
+产物文件名带周期（best_{品种}_{周期}.json / ckpt_{品种}_{周期}_step_*.pt /
+training_history_{品种}_{周期}.json），不同周期互不覆盖。
 """
 from __future__ import annotations
 
 import glob as _glob
 import json
 import pathlib
+import random
 import sys
 import time
 from pathlib import Path
@@ -28,10 +34,39 @@ from model_core.engine import AlphaEngine
 from model_core.vocab import VOCAB_VERSION
 
 
-def train_from_file(data_file: str, *, from_scratch: bool = False) -> AlphaEngine | None:
+def file_tag(symbol: str, timeframe: str | None) -> str:
+    """品种+周期的文件名标签；无周期时退回纯品种（兼容旧产物）。"""
+    return f"{symbol}_{timeframe}" if timeframe else symbol
+
+
+def _seed_rng(seed: int | None) -> int:
+    """设定随机种子并返回实际使用的种子（从头训练时打乱轨迹）。"""
+    if seed is None:
+        seed = random.SystemRandom().randrange(1, 2**31 - 1)
+    import torch
+    torch.manual_seed(seed)
+    random.seed(seed)
+    try:
+        import numpy as np
+        np.random.seed(seed % (2**32))
+    except Exception:
+        pass
+    return int(seed)
+
+
+def _latest_ckpt(tag: str) -> Path | None:
+    files = sorted(_glob.glob(str(pathlib.Path("checkpoints") / f"ckpt_{tag}_step_*.pt")))
+    return Path(files[-1]) if files else None
+
+
+def train_from_file(
+    data_file: str, *, from_scratch: bool = False, additional_steps: int = 0,
+    resume_file: str | None = None, seed: int | None = None,
+) -> AlphaEngine | None:
     info = inspect_parquet_file(data_file)
     symbol = info["symbol"]
     timeframe = info["timeframe"]
+    tag = file_tag(symbol, timeframe)
 
     print(f"\n{'='*60}")
     print(f"  AlphaGPT 文件训练 — {info['filename']}")
@@ -40,9 +75,12 @@ def train_from_file(data_file: str, *, from_scratch: bool = False) -> AlphaEngin
     print(f"  周期: {timeframe}")
     print(f"  数据: 强制离线 Parquet（不连接 MT5）")
     print(f"  文件: {Path(data_file).resolve()}")
-    print(f"  训练步数: {ModelConfig.TRAIN_STEPS}")
+    if additional_steps > 0:
+        print(f"  本次新增步数: {additional_steps}")
+    else:
+        print(f"  目标总步数: {ModelConfig.TRAIN_STEPS}（未指定新增步数）")
     print(f"  K线数: {info['bars']}")
-    print(f"  模式: {'重新训练（从头）' if from_scratch else '自动续训'}")
+    print(f"  模式: {'重新训练（从头，换随机种子）' if from_scratch else '自动续训'}")
     print(f"{'='*60}")
 
     try:
@@ -54,25 +92,26 @@ def train_from_file(data_file: str, *, from_scratch: bool = False) -> AlphaEngin
         print(f"  [错误] 数据加载失败: {e}")
         return None
 
+    # 从头训练：换随机种子，避免每次踩同一条搜索轨迹
+    if from_scratch:
+        used = _seed_rng(seed)
+        print(f"  [随机种子] {used}（从头训练已打乱探索轨迹）")
+
     engine = AlphaEngine(data_manager=mgr, target_symbol=symbol)
     engine.timeframe = timeframe
     engine.data_file = str(Path(data_file).resolve())
     engine.mode = "parquet_file"
-    engine.train_steps = ModelConfig.TRAIN_STEPS
 
-    ckpt_pattern = str(pathlib.Path("checkpoints") / f"ckpt_{symbol}_step_*.pt")
-    ckpt_files = sorted(_glob.glob(ckpt_pattern))
     start_step = 0
-
     if from_scratch:
         removed = 0
-        for p in ckpt_files:
+        for p in _glob.glob(str(pathlib.Path("checkpoints") / f"ckpt_{tag}_step_*.pt")):
             try:
                 pathlib.Path(p).unlink(missing_ok=True)
                 removed += 1
             except OSError as e:
                 print(f"  [警告] 无法删除检查点 {p}: {e}")
-        hist_path = pathlib.Path(f"training_history_{symbol}.json")
+        hist_path = pathlib.Path(f"training_history_{tag}.json")
         if hist_path.exists():
             try:
                 hist_path.unlink()
@@ -80,23 +119,46 @@ def train_from_file(data_file: str, *, from_scratch: bool = False) -> AlphaEngin
                 pass
         print(f"  [重新训练] 已清除 {removed} 个检查点，从第 0 步开始")
         # 保留已有最优策略作为分数下限，避免开局弱公式覆盖 strategies/best_*.json
-        _seed_best_from_strategy(engine, symbol)
-        ckpt_files = []
-    elif ckpt_files:
-        latest = ckpt_files[-1]
-        try:
-            start_step = engine.load_checkpoint(latest)
-            print(f"  [续训] 从 {latest} 恢复，起始步={start_step}")
-        except Exception as e:
-            print(f"  [警告] 检查点加载失败: {e}，将从头开始")
+        _seed_best_from_strategy(engine, symbol, timeframe)
+    elif resume_file:
+        rp = pathlib.Path(resume_file)
+        if rp.exists():
+            try:
+                start_step = engine.load_checkpoint(str(rp))
+                print(f"  [续训] 从指定检查点 {rp.name} 恢复，起始步={start_step}")
+            except Exception as e:
+                print(f"  [警告] 检查点加载失败: {e}，将从头开始")
+        else:
+            print(f"  [警告] 指定检查点不存在: {resume_file}，将自动寻找最新检查点")
+            latest = _latest_ckpt(tag)
+            if latest:
+                start_step = engine.load_checkpoint(str(latest))
+                print(f"  [续训] 从 {latest} 恢复，起始步={start_step}")
+    else:
+        latest = _latest_ckpt(tag)
+        if latest:
+            try:
+                start_step = engine.load_checkpoint(str(latest))
+                print(f"  [续训] 从 {latest} 恢复，起始步={start_step}")
+            except Exception as e:
+                print(f"  [警告] 检查点加载失败: {e}，将从头开始")
 
-    if start_step >= ModelConfig.TRAIN_STEPS:
-        print(f"  [完成] {symbol} 已完成全部 {ModelConfig.TRAIN_STEPS} 步，跳过训练")
+    # 目标总步数：指定了「本次新增步数」则 start+新增；否则沿用默认总步数
+    if additional_steps > 0:
+        target = start_step + int(additional_steps)
+    else:
+        target = max(ModelConfig.TRAIN_STEPS, start_step)
+    ModelConfig.TRAIN_STEPS = target
+    engine.train_steps = target
+
+    if start_step >= target:
+        print(f"  [完成] {tag} 已达目标步数 {target}（当前 {start_step}），无需再训；"
+              f"想继续请填「本次新增步数」或从头训练")
         _save_strategy(engine, symbol, timeframe, data_file)
         return engine
 
     if start_step == 0 and not from_scratch:
-        hist_path = pathlib.Path(f"training_history_{symbol}.json")
+        hist_path = pathlib.Path(f"training_history_{tag}.json")
         if hist_path.exists():
             hist_path.unlink()
         print("  [新训] 从第 0 步开始")
@@ -109,9 +171,11 @@ def train_from_file(data_file: str, *, from_scratch: bool = False) -> AlphaEngin
     return engine
 
 
-def _seed_best_from_strategy(engine: AlphaEngine, symbol: str) -> None:
-    """把已有 best_{symbol}.json 当作重新训练的分数下限。"""
-    path = pathlib.Path("strategies") / f"best_{symbol}.json"
+def _seed_best_from_strategy(engine: AlphaEngine, symbol: str, timeframe: str | None = None) -> None:
+    """把已有 best_{symbol}_{tf}.json（或旧版 best_{symbol}.json）当作重新训练的分数下限。"""
+    path = pathlib.Path("strategies") / f"best_{file_tag(symbol, timeframe)}.json"
+    if not path.exists() and timeframe:
+        path = pathlib.Path("strategies") / f"best_{symbol}.json"  # 兼容旧命名
     if not path.exists():
         return
     try:
@@ -132,7 +196,7 @@ def _seed_best_from_strategy(engine: AlphaEngine, symbol: str) -> None:
 
 
 def _save_strategy(engine: AlphaEngine, symbol: str, timeframe: str, data_file: str) -> None:
-    path = pathlib.Path("strategies") / f"best_{symbol}.json"
+    path = pathlib.Path("strategies") / f"best_{file_tag(symbol, timeframe)}.json"
     path.parent.mkdir(exist_ok=True)
     # 若磁盘上已有更高分，不要用更弱结果覆盖
     if path.exists() and engine.best_formula is not None:
@@ -183,8 +247,9 @@ if __name__ == "__main__":
     ModelConfig.REWARD_MODE = "ftmo"
 
     if "--data-file" not in sys.argv:
-        print("用法: python train_file.py --data-file PATH\\TO\\SYMBOL_TF.parquet [--from-scratch]")
-        print("示例: python train_file.py --data-file D:\\K线数据\\AAPL_H1.parquet")
+        print("用法: python train_file.py --data-file PATH\\TO\\SYMBOL_TF.parquet "
+              "[--steps N] [--from-scratch] [--resume-file ckpt.pt]")
+        print("示例: python train_file.py --data-file D:\\K线数据\\AAPL_H1.parquet --steps 200")
         sys.exit(1)
 
     idx = sys.argv.index("--data-file")
@@ -194,16 +259,24 @@ if __name__ == "__main__":
 
     data_file = sys.argv[idx + 1]
     from_scratch = "--from-scratch" in sys.argv
+    additional_steps = 0
     if "--steps" in sys.argv:
         si = sys.argv.index("--steps")
         if si + 1 < len(sys.argv):
             try:
-                ModelConfig.TRAIN_STEPS = int(sys.argv[si + 1])
-                print(f"[参数] 训练步数 = {ModelConfig.TRAIN_STEPS}")
+                additional_steps = int(sys.argv[si + 1])
+                print(f"[参数] 本次新增步数 = {additional_steps}")
             except ValueError:
-                print("[参数] --steps 非法，使用默认步数")
+                print("[参数] --steps 非法，忽略")
+    resume_file = None
+    if "--resume-file" in sys.argv:
+        ri = sys.argv.index("--resume-file")
+        if ri + 1 < len(sys.argv):
+            resume_file = sys.argv[ri + 1]
+
     t0 = time.time()
-    eng = train_from_file(data_file, from_scratch=from_scratch)
+    eng = train_from_file(data_file, from_scratch=from_scratch,
+                          additional_steps=additional_steps, resume_file=resume_file)
     elapsed = time.time() - t0
 
     if eng:

@@ -967,6 +967,7 @@ def api_training_start(payload: dict):
     steps = int(payload.get("steps", 0) or 0)
     timeframe = str(payload.get("timeframe", "H1") or "H1").upper()
     islands = int(payload.get("islands", 0) or 0)
+    resume_file = str(payload.get("resume_file", "") or "").strip()
     if direct_mt5:
         symbol = str(payload.get("symbol", "")).strip()
         bars = int(payload.get("bars", 6000) or 6000)
@@ -980,6 +981,8 @@ def api_training_start(payload: dict):
             cmd.extend(["--steps", str(steps)])
         if islands > 1:
             cmd.extend(["--islands", str(islands)])
+        if resume_file:
+            cmd.extend(["--resume-file", resume_file])
         if from_scratch:
             cmd.append("--from-scratch")
         data_file = "（由 MT5 直连获取）"
@@ -997,15 +1000,89 @@ def api_training_start(payload: dict):
             cmd.append("--from-scratch")
         if steps > 0:
             cmd.extend(["--steps", str(steps)])
+        if resume_file:
+            cmd.extend(["--resume-file", resume_file])
         log_name = Path(data_file).stem
     log_file = LOGS_DIR / f"train_{log_name}_{int(time.time())}.log"
     result = training_job.start(cmd, log_file, {
         "data_file": data_file, "direct_mt5": direct_mt5,
         "from_scratch": from_scratch, "steps": steps, "timeframe": timeframe,
-        "islands": islands,
+        "islands": islands, "resume_file": resume_file,
     })
     result["log"] = str(log_file)
     return result
+
+
+@app.get("/api/training/checkpoints")
+def api_training_checkpoints(data_file: str = ""):
+    """列出某数据文件（品种+周期）可用的检查点，供前端可视化选择续训起点。
+
+    返回单引擎 ckpt_ 与岛模式 island_ckpt_ 两类，各带步数、最优分、时间、大小。
+    """
+    data_file = str(data_file or "").strip()
+    if not data_file:
+        raise HTTPException(400, "缺少 data_file")
+    try:
+        from data_pipeline.parquet_manager import inspect_parquet_file
+        info = inspect_parquet_file(data_file)
+        symbol, tf = info["symbol"], info["timeframe"]
+    except Exception as exc:
+        raise HTTPException(400, f"数据文件无法解析: {exc}")
+    tag = f"{symbol}_{tf}" if tf else symbol
+    ck_dir = ROOT / "checkpoints"
+    singles: list[dict] = []
+    islands: list[dict] = []
+    if ck_dir.exists():
+        import re as _re
+        for p in sorted(ck_dir.glob("*.pt")):
+            m = _re.match(r"(island_)?ckpt_(.+?)_step_(\d+)\.pt$", p.name)
+            if not m:
+                continue
+            is_island = bool(m.group(1))
+            entry_tag = m.group(2)
+            # 同时列出：本品种本周期（新命名）、本品种旧命名（无周期）、
+            # 以及本品种其它周期（方便用户看清/删除），按 symbol 前缀匹配
+            if not (entry_tag == tag or entry_tag == symbol
+                    or entry_tag.startswith(symbol + "_")):
+                continue
+            step = int(m.group(3))
+            try:
+                st = p.stat()
+                entry = {
+                    "file": str(p), "name": p.name, "step": step, "tag": entry_tag,
+                    "current": entry_tag == tag,
+                    "mtime": datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M"),
+                    "size_mb": round(st.st_size / 1048576, 1),
+                }
+            except OSError:
+                continue
+            (islands if is_island else singles).append(entry)
+    singles.sort(key=lambda x: (x["tag"] != tag, x["step"]))
+    islands.sort(key=lambda x: (x["tag"] != tag, x["step"]))
+    return {"tag": tag, "symbol": symbol, "timeframe": tf,
+            "single": singles, "island": islands}
+
+
+@app.post("/api/training/checkpoint/delete")
+def api_delete_checkpoint(payload: dict):
+    """删除指定检查点文件（仅限 checkpoints/ 下的 .pt），给用户清理占用。"""
+    name = str(payload.get("name", "") or "").strip()
+    if not name:
+        raise HTTPException(400, "缺少检查点名")
+    ck_dir = (ROOT / "checkpoints").resolve()
+    target = (ck_dir / Path(name).name).resolve()
+    if not str(target).startswith(str(ck_dir)) or target.suffix != ".pt":
+        raise HTTPException(400, "非法检查点路径")
+    if not target.exists():
+        return {"ok": True, "message": "文件已不存在", "deleted": name}
+    try:
+        size = target.stat().st_size
+        target.unlink()
+    except OSError as exc:
+        raise HTTPException(500, f"删除失败: {exc}")
+    logger.info(f"[看板] 已删除检查点 {target.name}（{size/1048576:.1f}MB）")
+    return {"ok": True, "message": f"已删除 {target.name}",
+            "freed_mb": round(size / 1048576, 1)}
 
 
 @app.post("/api/training/stop")
@@ -1032,13 +1109,15 @@ def api_training_curve(symbol: str = ""):
         if arg_file and arg_file.endswith(".parquet"):
             try:
                 from data_pipeline.parquet_manager import parse_parquet_filename
-                symbol, _timeframe = parse_parquet_filename(arg_file)
+                sym, tf = parse_parquet_filename(arg_file)
+                tag = f"{sym}_{tf}" if tf else sym
             except (ValueError, OSError):
-                stem = Path(arg_file).stem
-                symbol = stem.rsplit("_", 1)[0] + "_"
+                tag = Path(arg_file).stem
             island = int(training_job.args.get("islands", 0) or 0) > 1
-            suffix = "_island" if island else ""
-            candidates.append(ROOT / f"training_history_{symbol}{suffix}.json")
+            # 新命名（品种_周期）→ 岛曲线 → 旧命名（仅品种 / 文件 stem）逐级回退
+            if island:
+                candidates.append(ROOT / f"training_history_{tag}_island.json")
+            candidates.append(ROOT / f"training_history_{tag}.json")
             candidates.append(ROOT / f"training_history_{Path(arg_file).stem}.json")
         candidates.extend(sorted(
             ROOT.glob("training_history_*.json"),

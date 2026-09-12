@@ -140,7 +140,7 @@
     <div class="card" style="margin-bottom:14px">
       <h3>策略信号</h3>
       <table><thead><tr>
-        <th>品种</th><th>策略</th><th>方向</th><th>强度</th><th>仓位值</th><th>K线时间（本地）</th><th>状态</th>
+        <th>品种</th><th>策略</th><th>方向</th><th>强度</th><th>仓位值</th><th>K线收盘（本地）</th><th>状态</th>
       </tr></thead><tbody id="ov-signals"><tr><td colspan="7" class="hint">加载中…</td></tr></tbody></table>
     </div>
     <div class="card" style="margin-bottom:14px">
@@ -229,19 +229,20 @@
           <div class="step-num">2</div>
           <div class="step-body">
             <div class="step-title">设置训练参数</div>
-            <div class="row"><input type="number" id="tr-steps" placeholder="自定义步数" min="10">
-              <button class="btn small ghost" onclick="setTrainPreset(60)">快速试跑 60 步</button>
-              <button class="btn small ghost" onclick="setTrainPreset(9000)">正式训练 9000 步</button></div>
-            <div class="field-help">单引擎默认自动续训：沿用上次训练成果继续（依据 checkpoints 里的检查点）。
-              步数填"总步数"——上次跑了 60 步想继续，这次就填 120 或 9000；想推倒重来才勾选"从头训练"。
-              岛模式也会从最近一次完整迁移阶段续训；只有勾选"从头训练"才会清除对应的岛检查点。</div>
-            <div class="row"><label class="hint"><input type="checkbox" id="tr-scratch"> 从头训练（清除检查点）</label></div>
+            <div class="row"><input type="number" id="tr-steps" placeholder="本次新增步数（留空=补到默认总步数）" min="10">
+              <button class="btn small ghost" onclick="setTrainPreset(200)">再练 200 步</button>
+              <button class="btn small ghost" onclick="setTrainPreset(1000)">再练 1000 步</button></div>
+            <div class="field-help">步数现在指「本次再跑多少步」，不是总步数：留空则自动补到默认总步数（9000）；填 200 就在当前进度上再加 200 步。
+              这样续训不会再出现"已跑 1080 步、填 60 反而直接结束"的情况。想推倒重来才勾选"从头训练"（会清除该品种该周期的检查点，并换一个随机种子重新探索）。</div>
+            <div class="row"><label class="hint"><input type="checkbox" id="tr-scratch"> 从头训练（清除检查点 + 换随机种子）</label></div>
             <div class="row"><label>训练引擎</label><select id="tr-islands">
               <option value="0" selected>单引擎（标准，支持续训）</option>
               <option value="3">岛模式 ×3（抗停滞，耗时×3）</option>
               <option value="5">岛模式 ×5（抗停滞，耗时×5）</option>
             </select></div>
             <div class="field-help">岛模式：多个种群同时探索、定期交换精英公式，专治"分数卡住不涨"。支持从最近一次完整迁移阶段续训，耗时约为单引擎的岛数倍；若连续多个停滞窗口仍无进步会自动结束并保留当前最优。</div>
+            <div class="row" style="margin-top:8px"><button class="btn small ghost" onclick="loadCheckpoints()">查看/选择续训检查点</button></div>
+            <div id="tr-ckpt-box" class="hint" style="margin-top:6px"></div>
           </div>
         </div>
         <div class="step">
@@ -253,7 +254,7 @@
               <button class="btn danger" onclick="stopTraining()">停止训练</button>
             </div>
             <div id="tr-msg" class="msg"></div>
-            <div class="hint">训练输出：<code>strategies/best_品种.json</code>、<code>checkpoints/</code>、训练日志。</div>
+            <div class="hint">训练输出（按品种+周期命名，互不覆盖）：<code>strategies/best_品种_周期.json</code>、<code>checkpoints/</code>、训练日志。</div>
           </div>
         </div>
         <div class="card" style="background:var(--panel2);margin-top:12px">
@@ -856,16 +857,58 @@ function updateTrainFileMeta(files) {
     "<span>时间：" + esc(range) + "</span>";
 }
 function setTrainPreset(steps) { $("tr-steps").value = steps; }
+let selectedResumeFile = "";   // 用户显式选择的续训检查点（空=自动用最新）
+async function loadCheckpoints() {
+  const data_file = $("tr-file").value;
+  const box = $("tr-ckpt-box");
+  if (!data_file) { box.innerHTML = "<span class='hint'>请先在上方选择数据文件。</span>"; return; }
+  box.innerHTML = "<span class='hint'>加载中…</span>";
+  try {
+    const r = await api("/api/training/checkpoints?data_file=" + encodeURIComponent(data_file));
+    const render = (list, kind) => list.map(c => {
+      const sel = selectedResumeFile === c.file;
+      const tagTxt = c.tag === r.tag ? "本周期" : esc(c.tag);
+      return "<tr><td>" + (kind === "island" ? "岛 " : "") + c.step + " 步</td>" +
+        "<td class='hint'>" + tagTxt + "</td>" +
+        "<td>" + esc(c.mtime) + "</td><td>" + c.size_mb + "MB</td>" +
+        "<td><button class='btn small " + (sel ? "green" : "ghost") + "' onclick=\"pickResume('" +
+          esc(c.file).replace(/'/g, "\\'") + "')\">" + (sel ? "已选" : "从此续训") + "</button> " +
+        "<button class='btn small danger' onclick=\"deleteCkpt('" + esc(c.name) + "')\">删</button></td></tr>";
+    }).join("");
+    const rows = render(r.single, "single") + render(r.island, "island");
+    box.innerHTML = (r.single.length || r.island.length)
+      ? "<div class='hint'>“" + esc(r.tag) + "” 相关检查点（含旧命名/其它周期；点“从此续训”选起点，点“删”清理占用）：</div>" +
+        "<table style='border-collapse:collapse;width:100%;margin-top:4px'>" +
+        "<tr class='hint'><td>步数</td><td>周期</td><td>时间</td><td>大小</td><td>操作</td></tr>" + rows + "</table>" +
+        "<div class='hint' style='margin-top:4px'>不选则默认从本周期最新检查点续训。" +
+        (selectedResumeFile ? "当前已选：" + esc(selectedResumeFile.split(/[\\/]/).pop()) : "") + "</div>"
+      : "<div class='hint'>该品种还没有任何检查点（全新训练）。</div>";
+  } catch (e) { box.innerHTML = "<span class='hint'>加载失败：" + esc(e.message) + "</span>"; }
+}
+function pickResume(file) {
+  selectedResumeFile = (selectedResumeFile === file) ? "" : file;
+  if (selectedResumeFile) $("tr-scratch").checked = false;  // 选续训点就不是从头训练
+  loadCheckpoints();
+}
+async function deleteCkpt(name) {
+  if (!confirm("确认删除检查点 " + name + "？此操作不可撤销。")) return;
+  try {
+    const r = await api("/api/training/checkpoint/delete", { method: "POST", body: JSON.stringify({ name }) });
+    showMsg("tr-msg", r.message + (r.freed_mb ? "，释放 " + r.freed_mb + "MB" : ""), true);
+    if (selectedResumeFile && selectedResumeFile.endsWith(name)) selectedResumeFile = "";
+    loadCheckpoints();
+  } catch (e) { showMsg("tr-msg", e.message, false); }
+}
 async function startDirectTraining() {
   const symbol = $("mt5-symbol").value.trim();
-  const steps = parseInt($("tr-steps").value, 10) || 60;
+  const steps = parseInt($("tr-steps").value, 10) || 0;
   const bars = parseInt($("mt5-bars").value, 10) || 6000;
   const timeframe = $("mt5-tf").value;
   const islands = parseInt($("tr-islands").value, 10) || 0;
   if (!symbol) { showMsg("tr-msg", "请填写 MT5 品种", false); return; }
   if (bars < 800) { showMsg("tr-msg", "K线数量至少 800 根", false); return; }
   try {
-    await api("/api/training/start", { method: "POST", body: JSON.stringify({ direct_mt5: true, symbol, bars, timeframe, steps, from_scratch: $("tr-scratch").checked, islands }) });
+    await api("/api/training/start", { method: "POST", body: JSON.stringify({ direct_mt5: true, symbol, bars, timeframe, steps, from_scratch: $("tr-scratch").checked, islands, resume_file: selectedResumeFile }) });
     showMsg("tr-msg", "已启动：MT5 获取 " + timeframe + " → 保存数据 → 开始训练" + (islands > 1 ? "（岛模式 ×" + islands + "）" : ""), true);
     pollTraining();
   } catch (e) { showMsg("tr-msg", e.message, false); }
@@ -915,7 +958,7 @@ async function startTraining() {
   const from_scratch = $("tr-scratch").checked;
   const islands = parseInt($("tr-islands").value, 10) || 0;
   try {
-    const r = await api("/api/training/start", { method: "POST", body: JSON.stringify({ data_file, steps, from_scratch, islands }) });
+    const r = await api("/api/training/start", { method: "POST", body: JSON.stringify({ data_file, steps, from_scratch, islands, resume_file: selectedResumeFile }) });
     showMsg("tr-msg", islands > 1 ? "岛模式训练已启动（" + islands + " 岛，完成后策略自动保存）" : "训练已启动（完成后策略自动保存到 strategies/）", true);
   } catch (e) { showMsg("tr-msg", e.message, false); }
   pollTraining();

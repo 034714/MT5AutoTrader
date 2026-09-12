@@ -29,15 +29,17 @@ configure_train_stdio()
 from data_pipeline.parquet_manager import ParquetDataManager, inspect_parquet_file
 from model_core.config import ModelConfig
 from model_core.island_engine import IslandAlphaEngine
-from train_file import _save_strategy
+from train_file import _save_strategy, file_tag, _seed_rng
 
 
 def train_island_from_file(
     data_file: str, *, n_islands: int | None = None, from_scratch: bool = False,
+    additional_steps: int = 0, resume_file: str | None = None, seed: int | None = None,
 ) -> IslandAlphaEngine | None:
     info = inspect_parquet_file(data_file)
     symbol = info["symbol"]
     timeframe = info["timeframe"]
+    tag = file_tag(symbol, timeframe)
 
     print(f"\n{'='*60}")
     print(f"  Island 岛模式训练 — {info['filename']}")
@@ -59,7 +61,13 @@ def train_island_from_file(
         print(f"  [错误] 数据加载失败: {e}")
         return None
 
-    itrain = IslandAlphaEngine(data_manager=mgr, n_islands=n_islands)
+    # 从头训练：换随机种子，避免每次踩同一条搜索轨迹
+    base_seed = None
+    if from_scratch:
+        base_seed = _seed_rng(seed)
+        print(f"  [随机种子] {base_seed}（从头训练已打乱探索轨迹）")
+
+    itrain = IslandAlphaEngine(data_manager=mgr, n_islands=n_islands, base_seed=base_seed)
     itrain.tag_islands(
         symbol,
         timeframe=timeframe,
@@ -69,18 +77,30 @@ def train_island_from_file(
 
     # 岛模式检查点仅在完整迁移阶段结束后写入；自动续训从最近阶段恢复。
     ckpt_dir = pathlib.Path("checkpoints")
-    ckpt_pattern = f"island_ckpt_{symbol}_step_*.pt"
+    ckpt_pattern = f"island_ckpt_{tag}_step_*.pt"
     ckpts = sorted(ckpt_dir.glob(ckpt_pattern)) if ckpt_dir.exists() else []
     # 岛模式使用独立的全局曲线文件，不覆盖单引擎训练历史。
-    island_history_path = pathlib.Path(f"training_history_{symbol}_island.json")
+    island_history_path = pathlib.Path(f"training_history_{tag}_island.json")
     start_step = 0
     if from_scratch:
         for p in ckpts:
             p.unlink(missing_ok=True)
-        for p in pathlib.Path(".").glob(f"training_history_{symbol}__isl*.json"):
+        for p in pathlib.Path(".").glob(f"training_history_{tag}__isl*.json"):
             p.unlink(missing_ok=True)
         island_history_path.unlink(missing_ok=True)
         print(f"  [从头训练] 已清除 {len(ckpts)} 个岛检查点和岛训练曲线")
+    elif resume_file:
+        rp = pathlib.Path(resume_file)
+        if rp.exists():
+            try:
+                start_step = itrain.load_checkpoint(str(rp))
+                print(f"  [岛续训] 从指定检查点 {rp.name} 恢复，起始步={start_step}")
+            except Exception as exc:
+                print(f"  [警告] 岛检查点加载失败: {exc}，将从头开始")
+        else:
+            print(f"  [警告] 指定检查点不存在: {resume_file}，改用最新岛检查点")
+            if ckpts:
+                start_step = itrain.load_checkpoint(str(ckpts[-1]))
     elif ckpts:
         try:
             start_step = itrain.load_checkpoint(str(ckpts[-1]))
@@ -88,10 +108,18 @@ def train_island_from_file(
         except Exception as exc:
             print(f"  [警告] 岛检查点加载失败: {exc}，将从头开始")
 
+    # 目标总步数：指定了「本次新增步数」则 start+新增；否则沿用默认总步数
+    if additional_steps > 0:
+        ModelConfig.TRAIN_STEPS = start_step + int(additional_steps)
+    else:
+        ModelConfig.TRAIN_STEPS = max(ModelConfig.TRAIN_STEPS, start_step)
+
     # 岛内不设置旧策略分数下限：否则界面从第 1 步起永远显示旧高分，
     # 无法判断新一轮搜索有没有真实进展。旧策略保护只在最终 _save_strategy
     # 时执行，低分新结果绝不会覆盖磁盘上的已有策略。
-    strat_path = pathlib.Path("strategies") / f"best_{symbol}.json"
+    strat_path = pathlib.Path("strategies") / f"best_{tag}.json"
+    if not strat_path.exists() and timeframe:
+        strat_path = pathlib.Path("strategies") / f"best_{symbol}.json"
     if strat_path.exists():
         try:
             old_score = json.loads(strat_path.read_text(encoding="utf-8")).get("best_score")
@@ -141,18 +169,19 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-file", required=True)
     parser.add_argument("--islands", type=int, default=0)
-    parser.add_argument("--steps", type=int, default=0)
+    parser.add_argument("--steps", type=int, default=0,
+                        help="本次新增步数；0=沿用默认总步数")
+    parser.add_argument("--resume-file", default=None,
+                        help="指定续训检查点文件；不填则自动用最新岛检查点")
     parser.add_argument("--from-scratch", action="store_true")
     args = parser.parse_args()
 
-    if args.steps > 0:
-        ModelConfig.TRAIN_STEPS = args.steps
-        print(f"[参数] 训练步数 = {ModelConfig.TRAIN_STEPS}")
     n_islands = args.islands if args.islands > 0 else None
     if n_islands is None and ModelConfig.N_ISLANDS <= 1:
         n_islands = 3  # 单岛没有意义，默认 3
     eng = train_island_from_file(
         args.data_file, n_islands=n_islands, from_scratch=args.from_scratch,
+        additional_steps=args.steps, resume_file=args.resume_file,
     )
     if eng is None:
         sys.exit(1)

@@ -216,3 +216,14 @@ class Config:
             "D1": mt5.TIMEFRAME_D1,
         }
         return mapping.get(str(tf_str).upper(), mt5.TIMEFRAME_H1)
+
+    # 各周期一根 K 线的秒数，用于把「开盘时间」换算成「收盘时间」显示
+    _TF_SECONDS: dict[str, int] = {
+        "M1": 60, "M5": 300, "M15": 900, "M30": 1800,
+        "H1": 3600, "H4": 14400, "D1": 86400,
+    }
+
+    @classmethod
+    def timeframe_seconds(cls, tf_str: str) -> int:
+        """'H1'/'M30' 等 → 该周期一根 K 线的秒数（未知按 H1）。"""
+        return cls._TF_SECONDS.get(str(tf_str).upper(), 3600)
