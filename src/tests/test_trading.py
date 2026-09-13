@@ -915,6 +915,27 @@ def test_manual_sl_respected():
 #   python tests/test_trading.py risk         # 风控/止损/阶梯
 #   python tests/test_trading.py runner       # 交易流程/台账
 #   python tests/test_trading.py sr           # 支撑/阻力 + 止盈一半 + 手动覆盖
+def test_pending_kind():
+    """挂单类型自动判断（decide_pending_kind）：买高=STOP、买低=LIMIT、贴价=拒。"""
+    from trading.mt5_client import decide_pending_kind
+    kind, why = decide_pending_kind("BUY", 101.0, 100.0, 100.0)
+    check("买高于现价 → 条件单", kind == "STOP", why)
+    kind, why = decide_pending_kind("BUY", 99.0, 100.0, 100.0)
+    check("买低于现价 → 限价单", kind == "LIMIT", why)
+    kind, why = decide_pending_kind("SELL", 99.0, 100.0, 100.0)
+    check("卖低于现价 → 条件单", kind == "STOP", why)
+    kind, why = decide_pending_kind("SELL", 101.0, 100.0, 100.0)
+    check("卖高于现价 → 限价单", kind == "LIMIT", why)
+    kind, why = decide_pending_kind("BUY", 100.0, 100.0, 100.0)
+    check("买贴着现价 → 拒绝", kind is None, why)
+    kind, why = decide_pending_kind("BUY", 100.3, 100.0, 100.0, min_dist=0.5)
+    check("最小距离内 → 拒绝", kind is None, why)
+    kind, why = decide_pending_kind("BUY", 100.6, 100.0, 100.0, min_dist=0.5)
+    check("越过最小距离 → 条件单", kind == "STOP", why)
+    kind, why = decide_pending_kind("SELL", 99.6, 100.0, 100.0, min_dist=0.5)
+    check("卖贴价拒绝对称", kind is None, why)
+
+
 #   python tests/test_trading.py signal       # 信号阈值/真实策略端到端
 #   python tests/test_trading.py quick        # 秒级核心冒烟
 #   python tests/test_trading.py -v ...       # 显示每个 PASS（默认只报失败）
@@ -925,7 +946,7 @@ DOMAINS: dict[str, tuple] = {
              test_profit_pct, test_manual_sl_respected),
     "runner": (test_no_duplicate_open, test_reverse_close_then_open,
                test_close_fail_blocks_open, test_dry_run_book, test_live_sync,
-               test_max_positions, test_strategy_loading),
+               test_max_positions, test_strategy_loading, test_pending_kind),
     "sr": (test_sr_levels, test_sr_sl_tp_buy, test_sr_fixed_sl_never_loosened,
            test_sr_sl_out_of_band_falls_back, test_sr_respect_tp_level,
            test_sr_dry_run_tp_fill, test_sr_partial_plan,

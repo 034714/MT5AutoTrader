@@ -40,6 +40,7 @@ from trading.signal_engine import (  # noqa: E402
     formula_preview,
     load_strategy_file,
 )
+from trading.mt5_client import retcode_hint  # noqa: E402
 
 APP_PORT = 8900
 WEB_DIR = SRC / "web"
@@ -741,6 +742,83 @@ def api_mt5_order(payload: dict):
     hint = result.get("hint") or ""
     detail = f"失败 retcode={result['retcode']} {result['comment']}"
     return {"ok": False, "message": (detail + "｜" + hint) if hint else detail}
+
+
+# ── 挂单（限价/条件单，到价后按券商规则成交；网页二次确认）────────────
+
+@app.get("/api/mt5/pending/list")
+def api_mt5_pending_list(symbol: str | None = None):
+    """当前挂单（全部 magic，含手动下的）。symbol 给定时只返回该品种。"""
+    client = _get_mt5_client()
+    if client is None:
+        return {"orders": [], "error": "MT5 未连接"}
+    from trading.mt5_client import pending_to_dict
+    orders = client.get_orders((symbol or "").strip() or None)
+    return {"orders": [pending_to_dict(o) for o in orders]}
+
+
+@app.post("/api/mt5/pending/order")
+def api_mt5_pending_order(payload: dict):
+    """下挂单。check_only=true 时只做 order_check（只读，绝不发单）。"""
+    check_only = bool(payload.get("check_only"))
+    if not check_only and not payload.get("confirmed"):
+        raise HTTPException(400, "挂单需要二次确认")
+    client = _get_mt5_client()
+    if client is None:
+        raise HTTPException(400, "MT5 未连接")
+    if client.account_info() is None:
+        raise HTTPException(400, "MT5 账号信息不可用")
+    symbol = str(payload.get("symbol", "")).strip()
+    side = str(payload.get("side", "")).upper()
+    price = float(payload.get("price", 0) or 0)
+    lot = float(payload.get("lot", 0) or 0)
+    sl = float(payload.get("sl", 0) or 0)
+    tp = float(payload.get("tp", 0) or 0)
+    if not symbol:
+        raise HTTPException(400, "必须填写品种")
+    if side not in ("BUY", "SELL"):
+        raise HTTPException(400, "side 必须是 BUY 或 SELL")
+    if price <= 0:
+        raise HTTPException(400, "触发价格无效")
+    if lot <= 0:
+        raise HTTPException(400, "手数无效")
+    if not check_only:
+        client.dry_run = False  # 用户明确确认后的真实挂单
+    result = client.pending_order(symbol, side, price, lot,
+                                  sl=sl or None, tp=tp or None, check_only=check_only)
+    kind = result.get("kind")
+    if result["ok"]:
+        if check_only:
+            msg = f"检查通过：将下 {side} {kind} {lot} 手 @ {price}"
+        else:
+            msg = f"挂单成功：{side} {kind} {lot} 手 @ {price}"
+            logger.info(f"[挂单] {msg} SL={sl or '无'} TP={tp or '无'}")
+    else:
+        hint = retcode_hint(result.get("retcode"))
+        msg = f"失败 retcode={result.get('retcode')} {result.get('comment')}"
+        if hint:
+            msg += "｜" + hint
+    return {"ok": result["ok"], "message": msg, "kind": kind, "retcode": result.get("retcode")}
+
+
+@app.post("/api/mt5/pending/cancel")
+def api_mt5_pending_cancel(payload: dict):
+    if not payload.get("confirmed"):
+        raise HTTPException(400, "撤销挂单需要二次确认")
+    client = _get_mt5_client()
+    if client is None:
+        raise HTTPException(400, "MT5 未连接")
+    ticket = int(payload.get("ticket", 0) or 0)
+    if ticket <= 0:
+        raise HTTPException(400, "ticket 无效")
+    client.dry_run = False  # 用户明确确认后的真实动作
+    result = client.cancel_order(ticket)
+    if result["ok"]:
+        logger.info(f"[挂单] 已撤销 ticket={ticket}")
+        return {"ok": True, "message": f"挂单 ticket={ticket} 已撤销"}
+    hint = retcode_hint(result.get("retcode"))
+    msg = f"撤销失败 retcode={result.get('retcode')} {result.get('comment')}"
+    return {"ok": False, "message": (msg + "｜" + hint) if hint else msg}
 
 
 # ── 持仓管理（平仓 / 修改止损 / 修改止盈）────────────────────────────

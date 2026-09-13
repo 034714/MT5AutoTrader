@@ -86,6 +86,52 @@ def position_to_dict(client: "MT5Client", p, server_offset: int | None = None) -
     }
 
 
+def decide_pending_kind(side: str, price: float, bid: float, ask: float,
+                        min_dist: float = 0.0) -> tuple[str | None, str]:
+    """按挂单价与现价判断限价/条件单类型（纯函数，便于测试）。
+
+    返回 ("LIMIT"|"STOP"|None, 说明文案)；None 表示该价格离市价太近或无效。
+    规则：买——价高于现价为条件单(BUY STOP，到价市价买)、低于为限价单(BUY LIMIT)；
+    卖——价低于现价为条件单(SELL STOP)、高于为限价单(SELL LIMIT)。
+    min_dist 为价格单位的最小距离（stops_level × point），由调用方算好传入。
+    """
+    if side == "BUY":
+        if price > ask + min_dist:
+            return "STOP", "到价买入（高于现价）"
+        if price < ask - min_dist:
+            return "LIMIT", "低价买入（低于现价）"
+    else:
+        if price < bid - min_dist:
+            return "STOP", "到价卖出（低于现价）"
+        if price > bid + min_dist:
+            return "LIMIT", "高价卖出（高于现价）"
+    return None, "触发价离市价太近，请离现价远一点再挂"
+
+
+def pending_to_dict(o, server_offset: int | None = None) -> dict:
+    """把 MT5 挂单对象转成看板友好的 dict。"""
+    kinds = {2: "BUY LIMIT", 3: "SELL LIMIT", 4: "BUY STOP", 5: "SELL STOP"}
+    side = "BUY" if int(o.type) in (2, 4) else "SELL"
+    kind = "LIMIT" if int(o.type) in (2, 3) else "STOP"
+    ts = int(getattr(o, "time_setup", 0) or 0)
+    setup_time = ""
+    if ts > 0:
+        setup_time = datetime.fromtimestamp(ts - (server_offset or 0)).strftime("%Y-%m-%d %H:%M")
+    return {
+        "ticket": int(o.ticket),
+        "symbol": str(o.symbol),
+        "side": side,
+        "kind": kind,
+        "type_name": kinds.get(int(o.type), str(o.type)),
+        "volume": float(o.volume_current),
+        "price": float(o.price_open),
+        "sl": float(getattr(o, "sl", 0.0) or 0.0),
+        "tp": float(getattr(o, "tp", 0.0) or 0.0),
+        "magic": int(getattr(o, "magic", 0) or 0),
+        "setup_time": setup_time,
+    }
+
+
 class MT5Client:
     """MT5 订单执行与行情访问。dry_run=True 时下单类动作只记日志。"""
 
@@ -326,6 +372,100 @@ class MT5Client:
             "attempts": attempts,
             "request": {"symbol": symbol, "direction": direction, "volume": lot},
         }
+
+    def pending_order(self, symbol: str, side: str, price: float, lot: float,
+                      sl: float | None = None, tp: float | None = None,
+                      check_only: bool = False,
+                      comment: str = "MT5AutoTrader pending") -> dict[str, Any]:
+        """下挂单（限价/条件单，到价后按券商规则成交）。check_only=True 只做 order_check。
+
+        返回 {"ok", "retcode", "comment", "order", "kind"}；kind 为 LIMIT/STOP/None。
+        """
+        if not self._connected:
+            return {"ok": False, "retcode": None, "comment": "MT5 未连接", "order": 0, "kind": None}
+        side = str(side).upper()
+        lot = float(lot)
+        price = float(price)
+        if side not in ("BUY", "SELL") or lot <= 0 or price <= 0:
+            return {"ok": False, "retcode": None, "comment": "方向、价格或手数无效", "order": 0, "kind": None}
+        if not self.ensure_symbol_selected(symbol):
+            return {"ok": False, "retcode": None, "comment": f"品种不可用: {symbol}", "order": 0, "kind": None}
+        tick = mt5.symbol_info_tick(symbol)
+        if tick is None:
+            return {"ok": False, "retcode": None, "comment": f"无法获取报价: {mt5.last_error()}", "order": 0, "kind": None}
+        min_dist = self.stops_level_points(symbol) * self.point(symbol)
+        kind, why = decide_pending_kind(side, price, float(tick.bid), float(tick.ask), min_dist)
+        if kind is None:
+            return {"ok": False, "retcode": None, "comment": why, "order": 0, "kind": None}
+        if kind == "STOP":
+            order_type = mt5.ORDER_TYPE_BUY_STOP if side == "BUY" else mt5.ORDER_TYPE_SELL_STOP
+        else:
+            order_type = mt5.ORDER_TYPE_BUY_LIMIT if side == "BUY" else mt5.ORDER_TYPE_SELL_LIMIT
+        request: dict[str, Any] = {
+            "action": mt5.TRADE_ACTION_PENDING,
+            "symbol": symbol,
+            "volume": lot,
+            "type": order_type,
+            "price": price,
+            "magic": self.magic,
+            "comment": comment,
+            "type_time": mt5.ORDER_TIME_GTC,
+        }
+        if sl is not None and sl > 0:
+            request["sl"] = float(sl)
+        if tp is not None and tp > 0:
+            request["tp"] = float(tp)
+        if check_only:
+            last = None
+            for filling in self._fill_modes(symbol):
+                request["type_filling"] = filling
+                try:
+                    result = mt5.order_check(dict(request))
+                except Exception as exc:
+                    return {"ok": False, "retcode": None, "comment": f"order_check 异常: {exc}",
+                            "order": 0, "kind": kind}
+                if result is None:
+                    continue
+                retcode = int(getattr(result, "retcode", -1))
+                if retcode in (mt5.TRADE_RETCODE_INVALID_FILL, 10030):
+                    continue
+                last = result
+                break
+            if last is None:
+                return {"ok": False, "retcode": None, "comment": str(mt5.last_error()),
+                        "order": 0, "kind": kind}
+            retcode = int(getattr(last, "retcode", -1))
+            return {"ok": retcode in (0, 10009), "retcode": retcode,
+                    "comment": str(getattr(last, "comment", "")), "order": 0, "kind": kind}
+        if self.dry_run:
+            logger.info(f"[DRY-RUN] 挂单 {symbol} {side} {kind} {lot}手 @ {price} SL={sl} TP={tp}")
+            return {"ok": True, "retcode": 10009, "comment": "dry-run", "order": 0, "kind": kind}
+        result = self._send_request(request)
+        if result["ok"]:
+            logger.success(f"[MT5Client] 挂单成功 {symbol} {side} {kind} {lot}手 @ {price}")
+        result["kind"] = kind
+        return result
+
+    def get_orders(self, symbol: str | None = None) -> list:
+        """当前挂单（orders_get）。symbol 给定时只返回该品种；全部 magic 都返回。"""
+        if not self._connected:
+            return []
+        try:
+            orders = mt5.orders_get(symbol=symbol) if symbol else mt5.orders_get()
+        except Exception:
+            return []
+        return list(orders) if orders else []
+
+    def cancel_order(self, ticket: int) -> dict[str, Any]:
+        """撤销挂单（TRADE_ACTION_REMOVE）。返回 {"ok","retcode","comment","order"}。"""
+        if self.dry_run:
+            logger.info(f"[DRY-RUN] 撤销挂单 ticket={ticket}")
+            return {"ok": True, "retcode": 10009, "comment": "dry-run", "order": int(ticket)}
+        result = self._send_request({
+            "action": mt5.TRADE_ACTION_REMOVE,
+            "order": int(ticket),
+        })
+        return result
 
     def close_position(self, symbol: str, ticket: int,
                        volume: float | None = None) -> bool:

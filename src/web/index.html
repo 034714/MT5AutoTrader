@@ -276,26 +276,41 @@
         <div style="position:relative">
           <canvas id="sr-chart" height="500" style="width:100%;display:block;background:var(--panel2);border:1px solid var(--border);border-radius:6px;cursor:crosshair"></canvas>
           <div id="sr-chart-tip" style="position:absolute;display:none;pointer-events:none;background:rgba(10,12,16,.92);border:1px solid var(--border);border-radius:6px;padding:6px 9px;font-size:12px;line-height:1.5;white-space:pre;z-index:5"></div>
+          <div id="sr-draft-bar" style="position:absolute;display:none;top:8px;left:8px;z-index:8;background:rgba(14,17,22,.95);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px;box-shadow:0 8px 24px rgba(0,0,0,.5)">
+            <span id="sr-draft-info"></span>
+            <button class="btn small green" style="margin-left:8px" onclick="srDraftConfirm()">确认挂单</button>
+            <button class="btn small ghost" style="margin-left:4px" onclick="srDraftCancel()">取消</button>
+          </div>
           <div id="sr-ctx-menu" style="position:absolute;display:none;z-index:9;background:rgba(14,17,22,.97);border:1px solid var(--border);border-radius:8px;padding:6px;min-width:210px;box-shadow:0 8px 24px rgba(0,0,0,.5)"></div>
         </div>
         <div id="sr-chart-legend" class="hint" style="margin-top:6px"></div>
-        <div class="hint" style="margin-top:4px">滚轮缩放 · 拖动平移 · 双击复位 · 悬停看明细 · <strong>右键点图：按所指价位快速下单</strong>。绿色=支撑带，红色=压力带；蓝线=开仓价，红/绿虚线=止损/止盈（<strong>按住上下拖动，松手后弹确认框才生效</strong>；不在视野内时显示在上下边缘），橙虚线=止盈一半；▲/▼=历史入场（蓝=多、橙=空），圆点=离场（绿=盈利、红=亏损）。手动拖动设置的止损由你全权管理，不会被自动拉回；阶梯保本仍生效。</div>
+        <div class="hint" style="margin-top:4px">滚轮缩放 · 拖动平移 · 双击复位 · 悬停看明细 · <strong>右键点图：市价下单，或挂单（到价市价进场）——挂单先在图上拖动蓝（开仓）/红（止损）/绿（止盈）三条线，拖开仓价时止损止盈保持距离跟着走，再点「确认挂单」可在弹窗里改精确价格和手数</strong>。绿色=支撑带，红色=压力带；蓝粗线=持仓开仓价，红/绿虚线=止损/止盈（<strong>按住上下拖动，松手后弹确认框才生效</strong>；不在视野内时显示在上下边缘），橙虚线=止盈一半；▲/▼=历史入场（蓝=多、橙=空），圆点=离场（绿=盈利、红=亏损）。挂单以蓝虚线显示，可在右侧「当前挂单」撤销。</div>
       </div>
       <div class="card">
         <h3>手动下单</h3>
         <div class="row"><label>品种</label><input type="text" id="mn-symbol" list="mt5-symbol-list" autocomplete="off" placeholder="ETHUSD_" value="ETHUSD_"></div>
         <div class="row"><label>手数</label><input type="number" id="mn-lot" value="0.1" step="0.01" min="0.01"></div>
         <div class="row">
-          <button class="btn ghost" onclick="checkOrder('BUY')">检查买单</button>
-          <button class="btn ghost" onclick="checkOrder('SELL')">检查卖单</button>
-        </div>
-        <div class="row">
           <button class="btn green" onclick="manualOrder('BUY')">市价买入</button>
           <button class="btn danger" onclick="manualOrder('SELL')">市价卖出</button>
           <button class="btn ghost" onclick="manualOrder('CLOSE_ALL')">全部平仓</button>
         </div>
         <div id="mn-msg" class="msg"></div>
-        <div class="hint">“检查买单/卖单”只调用 MT5 order_check，不会成交；市价按钮会在确认后真实发单。右键点K线可按所指价位快速下单（手数用上面的设置）。</div>
+        <div class="hint">市价按钮在确认后真实发单；右键点K线可按所指价位快速下单或挂单（手数用上面的设置）。</div>
+        <h3 style="margin-top:14px">挂单（到价市价进场）</h3>
+        <div class="row"><label>方向</label>
+          <select id="mn-pd-side" style="min-width:70px"><option value="BUY">买</option><option value="SELL">卖</option></select>
+          <label>触发价</label><input type="number" id="mn-pd-price" step="any" style="width:120px;min-width:0">
+          <button class="btn small ghost" onclick="pendingOrderForm()">下挂单</button></div>
+        <div class="hint">到价后按市价进场：高于现价挂买/低于现价挂卖 = 条件单，反之为限价单。也可在图上右键选挂单，拖动蓝/红/绿线调整后确认。</div>
+        <div id="pend-list" class="hint" style="margin-top:6px">挂单列表加载中…</div>
+        <h3 style="margin-top:14px">设置止盈止损</h3>
+        <div class="row"><label>持仓</label><select id="sltp-pos" style="min-width:210px"><option value=''>（无持仓）</option></select></div>
+        <div class="row"><label>止损价</label><input type="number" id="sltp-sl" step="any" style="width:110px;min-width:0" placeholder="留空=不改">
+          <label>止盈价</label><input type="number" id="sltp-tp" step="any" style="width:110px;min-width:0" placeholder="留空=不改"></div>
+        <div class="row"><button class="btn small" onclick="applySlTp()">应用到该持仓</button>
+          <span class="hint">止损只能改价不能清除；止盈填 0 清除</span></div>
+        <div id="sltp-msg" class="msg"></div>
         <h3 style="margin-top:14px">当前持仓（实时）</h3>
         <div id="ch-positions" class="hint">加载中…</div>
       </div>
@@ -842,6 +857,7 @@ document.querySelectorAll("nav button[data-tab]").forEach(btn => {
     if (btn.dataset.tab === "strategies") loadStrategies();
     if (btn.dataset.tab === "training") { loadDataFiles(); pollTraining(); }
     if (btn.dataset.tab === "backtest") { loadDataFiles(); loadStrategyDropdowns(); pollBacktest(); loadBacktestReport(); }
+    if (btn.dataset.tab === "chart") { loadSRChart(true); loadPendingList(); }
     if (btn.dataset.tab === "history") { loadHistory(); loadEquityChart(); }
     if (btn.dataset.tab === "logs") loadLogView();
   };
@@ -951,6 +967,18 @@ async function refreshStatus() {
         "<button class='btn small danger' onclick=\"closePosition(" + p.ticket + ",'" + esc(p.symbol) + "')\">平仓</button></span></div>").join("")
     : "<div class='hint'>暂无持仓。</div>";
   function profitCls2Txt(v) { return v == null ? "—" : "<span class='" + (v > 0 ? "long" : (v < 0 ? "short" : "")) + "'>" + v.toFixed(2) + "</span>"; }
+  // 图表页「设置止盈止损」下拉与持仓同步（集合不变不重建，避免打断选择）
+  const sltpSel = $("sltp-pos");
+  if (sltpSel) {
+    const key = posList.map(p => p.ticket).join(",");
+    if (sltpSel.dataset.key !== key) {
+      sltpSel.dataset.key = key;
+      sltpSel.innerHTML = posList.length
+        ? posList.map(p => "<option value='" + p.ticket + "'>#" + p.ticket + " " + esc(p.symbol) + " " +
+            (p.direction === "BUY" ? "多" : "空") + " " + p.volume + "手</option>").join("")
+        : "<option value=''>（无持仓）</option>";
+    }
+  }
   srChartSyncPosSelector();
   // 动作
   const acts = rs.actions || [];
@@ -1488,6 +1516,8 @@ function fillSRSymbolOptions(cfg) {
 // ── 实时 K 线与关键位（总览）─────────────────────────────
 const srChart = {
   candles: [], forming: null, zones: [], meta: {}, trades: [], markers: [],
+  pendings: [],          // 当前挂单（含手动下的，全部 magic）
+  draft: null,           // 挂单草稿：{side, symbol, price, sl, tp, lot}，可拖动后确认
   barsVis: 120, viewEnd: null,   // viewEnd=null 跟随最新；否则为最右可见 bar 索引
   hover: null, drag: null, lineDrag: null, loading: false, layout: null,
 };
@@ -1562,10 +1592,11 @@ async function loadSRChart(silent) {
     srChart.loadedForSymbol = symbol;
   }
   try {
-    const [r, hist] = await Promise.all([
+    const [r, hist, pend] = await Promise.all([
       api("/api/sr/chart?symbol=" + encodeURIComponent(symbol) +
         "&timeframe=" + tf + "&bars=300"),
       api("/api/mt5/history?days=7").catch(() => null),
+      api("/api/mt5/pending/list").catch(() => null),
     ]);
     srChart.candles = r.candles || [];
     srChart.forming = r.forming || null;
@@ -1573,6 +1604,7 @@ async function loadSRChart(silent) {
     srChart.meta = r.info || {};
     const mine = hist && (hist.closed || []).concat(hist.open || []) || [];
     srChart.trades = mine.filter(t => t.symbol === symbol);
+    srChart.pendings = ((pend && pend.orders) || []).filter(o => o.symbol === symbol);
     srChart.viewEnd = null;   // 刷新后回到跟随最新
     const meta = $("sr-chart-meta");
     if (srChart.meta.error) {
@@ -1644,10 +1676,10 @@ function drawSRChart() {
     }
   }
   const posLines = pos ? [
-    ["开仓价", pos.open_price, "#4c8dff", [], null, false],
-    ["止损" + (slDim ? "（未设 · 拖动设置）" : ""), slV, "#ef5350", [5, 4], "sl", slDim],
-    ["止盈" + (tpDim ? "（未设 · 拖动设置）" : ""), tpV, "#26a69a", [5, 4], "tp", tpDim],
-    ["止盈一半", partialV, "#ff9800", [3, 3], "partial", false],
+    ["开仓价 #" + pos.ticket, pos.open_price, "#66b3ff", [], null, false, 3],
+    ["止损" + (slDim ? "（未设 · 拖动设置）" : ""), slV, "#ef5350", [5, 4], "sl", slDim, 1.6],
+    ["止盈" + (tpDim ? "（未设 · 拖动设置）" : ""), tpV, "#26a69a", [5, 4], "tp", tpDim, 1.6],
+    ["止盈一半", partialV, "#ff9800", [3, 3], "partial", false, 1.6],
   ] : [];
   if (!isFinite(lo) || !isFinite(hi)) return;
   if (hi - lo < 1e-12) hi = lo + Math.abs(lo) * 0.001 + 1e-9;
@@ -1755,7 +1787,7 @@ function drawSRChart() {
   ctx.textAlign = "left";
   srChart.layout.lines = [];
   posLines.forEach(l => {
-    const [label, val, color, dash, which, dim] = l;
+    const [label, val, color, dash, which, dim, lw] = l;
     if (!(val > 0)) return;
     const y = yOf(val);
     const yTop = padT, yBot = padT + plotH;
@@ -1782,13 +1814,57 @@ function drawSRChart() {
     }
     if (which) srChart.layout.lines.push({ which, val, y });
     ctx.globalAlpha = dim ? 0.55 : 1;
+    ctx.lineWidth = lw || 1.6;
     ctx.strokeStyle = color; ctx.setLineDash(dash);
     ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
     ctx.setLineDash([]);
     ctx.fillStyle = color;
     ctx.fillText(label + " " + val.toFixed(dec), padL + plotW - 92, y - 4);
     ctx.globalAlpha = 1;
+    ctx.lineWidth = 1;
   });
+  // 当前挂单（含手动下的）：蓝虚线=触发价，灰点线=挂单自带止损/止盈
+  (srChart.pendings || []).forEach(o => {
+    const y = yOf(o.price);
+    if (y < padT || y > padT + plotH) return;
+    ctx.lineWidth = 2; ctx.strokeStyle = "#7fb3ff"; ctx.setLineDash([8, 5]);
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
+    ctx.setLineDash([2, 4]); ctx.lineWidth = 1; ctx.globalAlpha = .55;
+    [["sl", "#ef5350"], ["tp", "#26a69a"]].forEach(([k, c]) => {
+      const v = o[k];
+      if (!(v > 0)) return;
+      const yv = yOf(v);
+      if (yv < padT || yv > padT + plotH) return;
+      ctx.strokeStyle = c;
+      ctx.beginPath(); ctx.moveTo(padL, yv); ctx.lineTo(padL + plotW, yv); ctx.stroke();
+    });
+    ctx.setLineDash([]); ctx.globalAlpha = 1;
+    ctx.fillStyle = "#7fb3ff";
+    ctx.fillText("挂单 " + (o.side === "BUY" ? "买" : "卖") + o.kind + " " +
+      o.volume + "手 @" + o.price, padL + 4, y - 4);
+  });
+  // 挂单草稿（右键发起）：三条线都可拖，确认后才真正发单
+  const dft = srChart.draft;
+  if (dft && dft.symbol === ($("sr-chart-symbol") ? $("sr-chart-symbol").value.trim() : "")) {
+    const dLines = [
+      ["挂单·开仓 " + (dft.side === "BUY" ? "买" : "卖") + " @" + dft.price.toFixed(dec),
+        dft.price, "#4c8dff", [], "d-entry", 3],
+      ["挂单止损 " + dft.sl.toFixed(dec), dft.sl, "#ef5350", [5, 4], "d-sl", 1.6],
+      ["挂单止盈 " + dft.tp.toFixed(dec), dft.tp, "#26a69a", [5, 4], "d-tp", 1.6],
+    ];
+    dLines.forEach(([label, val, color, dash, which, lw]) => {
+      const y = yOf(val);
+      if (y < padT || y > padT + plotH) return;
+      srChart.layout.lines.push({ which, val, y });
+      ctx.lineWidth = lw; ctx.strokeStyle = color; ctx.setLineDash(dash);
+      ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = color;
+      ctx.fillText(label, padL + 4, y - 4);
+    });
+    ctx.lineWidth = 1;
+  }
+  updateDraftBar();
   // 现价线
   const lastP = all[n - 1][4];
   const yl2 = yOf(lastP);
@@ -1875,6 +1951,8 @@ function srCtxMenu(evt) {
       esc(sym) + " @ <b>" + (price != null ? price.toFixed(dec) : "—") + "</b> · " + lot + " 手</div>" +
     "<button class='btn small green' style='display:block;width:100%;margin:3px 0' onclick=\"hideSrCtxMenu(); manualOrder('BUY')\">▲ 市价买入</button>" +
     "<button class='btn small danger' style='display:block;width:100%;margin:3px 0' onclick=\"hideSrCtxMenu(); manualOrder('SELL')\">▼ 市价卖出</button>" +
+    "<button class='btn small ghost' style='display:block;width:100%;margin:3px 0' onclick=\"hideSrCtxMenu(); srDraftStart('BUY', " + price + ")\">◈ 挂买单（到价市价进场）</button>" +
+    "<button class='btn small ghost' style='display:block;width:100%;margin:3px 0' onclick=\"hideSrCtxMenu(); srDraftStart('SELL', " + price + ")\">◈ 挂卖单（到价市价进场）</button>" +
     "<button class='btn small ghost' style='display:block;width:100%;margin:3px 0' onclick=\"hideSrCtxMenu(); manualOrder('CLOSE_ALL')\">全部平仓</button>" +
     "<button class='btn small ghost' style='display:block;width:100%;margin:3px 0 0' onclick=\"hideSrCtxMenu()\">取消</button>";
   menu.style.display = "block";
@@ -1925,8 +2003,7 @@ async function srChartCommitLine(which, price) {
   const cur = isSl ? pos.sl : pos.tp;
   if (cur > 0 && Math.abs(cur - val) <= Math.abs(cur) * 1e-6) return; // 没动
   askConfirm("确认修改" + label,
-    posHead + "\n" + label + "：" + (cur > 0 ? cur : "未设置") + " → 可在下方输入框修正价格" +
-    (isSl ? "\n\n手动设置后该仓位止损不再被自动拉回；阶梯保本仍生效。" : ""),
+    posHead + "\n" + label + "：" + (cur > 0 ? cur : "未设置") + " → 可在下方输入框修正价格",
     async v => {
       const p = Number(v.price);
       if (!p || p <= 0) { $("sr-chart-meta").textContent = "价格无效，未修改"; return; }
@@ -1944,6 +2021,147 @@ async function srChartCommitLine(which, price) {
       }
     },
     [{ key: "price", label: label + "价格", value: val }]);
+}
+
+// ── 图表挂单草稿：右键发起 → 拖动开仓/止损/止盈三条线 → 确认后发单 ───────
+function srDraftStart(side, price) {
+  hideSrCtxMenu();
+  const atr = Math.abs(Number(srChart.meta.atr) || 0);
+  const slOff = Math.max(atr * 1.5, Math.abs(price) * 0.008);
+  const tpOff = Math.max(atr * 3, Math.abs(price) * 0.016);
+  const sign = side === "BUY" ? 1 : -1;   // 买：止损在下止盈在上；卖：反之
+  srChart.draft = {
+    side,
+    symbol: ($("sr-chart-symbol").value || "").trim(),
+    price: Number(price.toFixed(srChartDec(price))),
+    sl: Number((price - sign * slOff).toFixed(srChartDec(price))),
+    tp: Number((price + sign * tpOff).toFixed(srChartDec(price))),
+    lot: parseFloat($("mn-lot").value) || 0.1,
+  };
+  drawSRChart();
+}
+function srDraftCancel() { srChart.draft = null; drawSRChart(); }
+function srDraftConfirm() {
+  const d = srChart.draft;
+  if (!d) return;
+  askConfirm("确认挂单（到价市价进场）",
+    d.symbol + " " + (d.side === "BUY" ? "买" : "卖") + " " + d.lot + " 手\n" +
+    "触发价 " + d.price + "：高于现价挂买/低于现价挂卖 = 条件单，反之为限价单\n" +
+    "止损/止盈填 0 表示不设",
+    async v => {
+      const price = Number(v.price), lot = Number(v.lot);
+      if (!price || price <= 0) { showMsg("mn-msg", "触发价无效", false); return; }
+      if (!lot || lot <= 0) { showMsg("mn-msg", "手数无效", false); return; }
+      try {
+        const r = await api("/api/mt5/pending/order", { method: "POST",
+          body: JSON.stringify({ confirmed: true, symbol: d.symbol, side: d.side,
+            price, lot, sl: Number(v.sl) || 0, tp: Number(v.tp) || 0 }) });
+        showMsg("mn-msg", r.message, r.ok);
+        if (r.ok) { srDraftCancel(); loadSRChart(true); loadPendingList(); }
+      } catch (e) { showMsg("mn-msg", "挂单失败：" + e.message, false); }
+    },
+    [{ key: "price", label: "触发价格", value: d.price },
+     { key: "lot", label: "手数", value: d.lot },
+     { key: "sl", label: "止损价（0=不设）", value: d.sl },
+     { key: "tp", label: "止盈价（0=不设）", value: d.tp }]);
+}
+function updateDraftBar() {
+  const bar = $("sr-draft-bar");
+  if (!bar) return;
+  const d = srChart.draft;
+  if (!d) { bar.style.display = "none"; return; }
+  $("sr-draft-info").textContent = "挂" + (d.side === "BUY" ? "买" : "卖") + "单 " +
+    d.lot + "手 @ " + d.price + " · 止损 " + d.sl + " · 止盈 " + d.tp +
+    "（拖动线条调整）";
+  bar.style.display = "block";
+}
+
+// ── 挂单列表 / 撤销 / 表单挂单 / 持仓止盈止损 ────────────────────────
+async function loadPendingList() {
+  const box = $("pend-list");
+  if (!box) return;
+  try {
+    const r = await api("/api/mt5/pending/list");
+    const list = r.orders || [];
+    box.innerHTML = list.length
+      ? "<table style='width:100%'>" + list.map(o =>
+          "<tr><td>" + esc(o.symbol) + "</td><td>" +
+          (o.side === "BUY" ? "<span class='long'>买</span>" : "<span class='short'>卖</span>") +
+          o.kind + "</td><td>" + o.volume + "手</td><td>@" + o.price + "</td>" +
+          "<td><button class='btn small danger' onclick='cancelPending(" + o.ticket + ")'>撤销</button></td></tr>"
+        ).join("") + "</table>"
+      : "<div class='hint'>当前没有挂单。</div>";
+  } catch (e) { box.innerHTML = "<div class='hint'>挂单列表加载失败：" + esc(e.message) + "</div>"; }
+}
+function cancelPending(ticket) {
+  askConfirm("撤销挂单", "确定撤销挂单 ticket=" + ticket + "？", async () => {
+    try {
+      const r = await api("/api/mt5/pending/cancel", { method: "POST",
+        body: JSON.stringify({ confirmed: true, ticket }) });
+      showMsg("mn-msg", r.message, r.ok);
+      loadPendingList(); loadSRChart(true);
+    } catch (e) { showMsg("mn-msg", "撤销失败：" + e.message, false); }
+  });
+}
+function pendingOrderForm() {
+  const symbol = $("mn-symbol").value.trim();
+  const side = $("mn-pd-side").value;
+  const price = parseFloat($("mn-pd-price").value);
+  const lot = parseFloat($("mn-lot").value) || 0.1;
+  if (!symbol) { showMsg("mn-msg", "请填写品种", false); return; }
+  if (!price || price <= 0) { showMsg("mn-msg", "请填写触发价", false); return; }
+  askConfirm("确认挂单（到价市价进场）",
+    symbol + " " + (side === "BUY" ? "买" : "卖") + " " + lot + " 手 @ " + price + "\n" +
+    "高于现价挂买/低于现价挂卖 = 条件单，反之为限价单\n止损/止盈填 0 表示不设",
+    async v => {
+      try {
+        const r = await api("/api/mt5/pending/order", { method: "POST",
+          body: JSON.stringify({ confirmed: true, symbol, side, price: Number(v.price),
+            lot: Number(v.lot), sl: Number(v.sl) || 0, tp: Number(v.tp) || 0 }) });
+        showMsg("mn-msg", r.message, r.ok);
+        if (r.ok) { loadSRChart(true); loadPendingList(); }
+      } catch (e) { showMsg("mn-msg", "挂单失败：" + e.message, false); }
+    },
+    [{ key: "price", label: "触发价格", value: price },
+     { key: "lot", label: "手数", value: lot },
+     { key: "sl", label: "止损价（0=不设）", value: "" },
+     { key: "tp", label: "止盈价（0=不设）", value: "" }]);
+}
+async function applySlTp() {
+  const sel = $("sltp-pos");
+  const ticket = parseInt(sel.value, 10);
+  if (!ticket) { showMsg("sltp-msg", "没有可操作的持仓", false); return; }
+  const slRaw = $("sltp-sl").value.trim(), tpRaw = $("sltp-tp").value.trim();
+  if (slRaw === "" && tpRaw === "") {
+    showMsg("sltp-msg", "止损止盈至少填一个", false); return;
+  }
+  const sl = slRaw === "" ? null : parseFloat(slRaw);
+  const tp = tpRaw === "" ? null : parseFloat(tpRaw);
+  if (sl !== null && (!sl || sl <= 0)) { showMsg("sltp-msg", "止损价无效（止损只能改价，不能清除）", false); return; }
+  if (tp !== null && (isNaN(tp) || tp < 0)) { showMsg("sltp-msg", "止盈价无效", false); return; }
+  const p = ((typeof lastStatus !== "undefined" && lastStatus &&
+              lastStatus.runner_status && lastStatus.runner_status.positions) || [])
+    .find(x => String(x.ticket) === String(ticket));
+  const head = p ? ("#" + p.ticket + " " + p.symbol + " " + (p.direction === "BUY" ? "多" : "空") +
+    " " + p.volume + "手（现价 " + (p.current_price || "—") + "）") : ("ticket=" + ticket);
+  askConfirm("确认修改止盈止损", head +
+    "\n止损 → " + (sl != null ? sl : "不改") +
+    (tp === 0 ? "\n止盈 → 清除" : (tp != null ? "\n止盈 → " + tp : "\n止盈 → 不改")),
+    async () => {
+      try {
+        let ok = true; const parts = [];
+        if (sl != null) {
+          const r = await api("/api/mt5/position/sl", { method: "POST", body: JSON.stringify({ ticket, sl }) });
+          ok = ok && r.ok; parts.push(r.message);
+        }
+        if (tp != null) {
+          const r = await api("/api/mt5/position/tp", { method: "POST", body: JSON.stringify({ ticket, tp }) });
+          ok = ok && r.ok; parts.push(r.message);
+        }
+        showMsg("sltp-msg", parts.join("；"), ok);
+        refreshStatus(); loadSRChart(true);
+      } catch (e) { showMsg("sltp-msg", "修改失败：" + e.message, false); }
+    });
 }
 
 function bindSRChartEvents() {
@@ -1968,7 +2186,21 @@ function bindSRChartEvents() {
   window.addEventListener("mousemove", e => {
     if (srChart.lineDrag) {
       const rect = cv.getBoundingClientRect();
-      srChart.lineDrag.price = srChartPriceAt(e.clientY - rect.top);
+      const raw = srChartPriceAt(e.clientY - rect.top);
+      const p = Number(raw.toFixed(srChartDec(raw)));
+      const which = srChart.lineDrag.which;
+      const d = srChart.draft;
+      if (which === "d-entry" && d) {
+        const off = d.price - p;   // 整组平移：拖开仓价，止损止盈保持距离跟着走
+        d.price = p; d.sl = Number((d.sl - off).toFixed(srChartDec(d.sl)));
+        d.tp = Number((d.tp - off).toFixed(srChartDec(d.tp)));
+      } else if (which === "d-sl" && d) {
+        d.sl = p;
+      } else if (which === "d-tp" && d) {
+        d.tp = p;
+      } else {
+        srChart.lineDrag.price = p;
+      }
       drawSRChart();
       return;
     }
@@ -1985,6 +2217,10 @@ function bindSRChartEvents() {
       const ld = srChart.lineDrag;
       srChart.lineDrag = null;
       cv.style.cursor = "crosshair";
+      if (ld.which && String(ld.which).indexOf("d-") === 0) {
+        drawSRChart();   // 挂单草稿线：拖动即时生效，确认时才发单
+        return;
+      }
       srChartCommitLine(ld.which, ld.price);
       drawSRChart();
       return;
@@ -2027,15 +2263,6 @@ setInterval(() => {
 }, 15000);
 
 // ── 手动交易 ──────────────────────────────────────────────
-async function checkOrder(direction) {
-  const symbol = $("mn-symbol").value.trim();
-  const lot = parseFloat($("mn-lot").value);
-  if (!symbol || !lot || lot <= 0) { showMsg("mn-msg", "请先填写有效的品种和手数", false); return; }
-  try {
-    const r = await api("/api/mt5/order_check", { method: "POST", body: JSON.stringify({ symbol, direction, lot }) });
-    showMsg("mn-msg", r.ok ? "预检查通过：" + (r.comment || "MT5 接受该订单参数") : "预检查未通过：" + (r.comment || r.message || "请查看 MT5 返回"), r.ok);
-  } catch (e) { showMsg("mn-msg", "预检查失败：" + e.message, false); }
-}
 async function manualOrder(direction) {
   const symbol = $("mn-symbol").value.trim();
   const lot = parseFloat($("mn-lot").value);
@@ -2289,6 +2516,7 @@ setInterval(() => { loadEquityChart(); }, 60000);   // 净值采样一分钟一�
 setInterval(() => {
   const active = document.querySelector("nav button.active");
   if (!active) return;
+  if (active.dataset.tab === "chart") loadPendingList();
   if (active.dataset.tab === "training") pollTraining();
   if (active.dataset.tab === "backtest") pollBacktest();
   if (active.dataset.tab === "logs" && $("lg-auto") && $("lg-auto").checked) loadLogView();

@@ -33,6 +33,7 @@
 - The venv `Scripts\python.exe` on this machine is a redirector: it spawns a child `Python311\python.exe` that actually binds the port. Two OS processes for one logical dashboard is expected. Stop logic must kill the port owner **and** its python parent, which `stop_all.ps1` does.
 - Stop the runner with `STOP_SIGNAL`; use PowerShell `Stop-Process` only as a verified PID fallback. Do not use `wmic` or `os.kill(pid, 0)`.
 - Do not verify batch files by running them through Git Bash `cmd.exe /c`. MSYS path conversion turns `/c` into a path and opens an interactive shell. Use `powershell.exe -NoProfile -Command "cmd.exe /c '<abs path>'"`.
+- Page-wide "Failed to fetch" (every widget failing at once, e.g. 查看续训点 + 策略库) means a dead dashboard, NOT a broken endpoint: check `netstat -ano | findstr :8900` first. The user may simply have closed the dashboard window — that is normal operation, not a bug. Restart via WMI so the process escapes the agent's shell tree — `Invoke-CimMethod Win32_Process Create -Arguments @{CommandLine='cmd.exe /c start.bat'; CurrentDirectory=<project root>}` — then confirm 8900 LISTENING + `/api/status` 200. Launching start.bat directly inside an agent command (foreground or background) leaves the dashboard inside that task's process/handle tree, which can take it down when the task ends.
 
 ## Logging rules
 
@@ -69,6 +70,14 @@
 - Do not assume MetaTrader5 python constants map to a fixed order. Read them from the module.
 - `order_check` retcode `0` with comment `Done` means the parameters are acceptable, not that anything traded.
 - retcode `10027` (`TRADE_RETCODE_CLIENT_DISABLES_AT`) means the MT5 terminal's AutoTrading button is off. `terminal_info().trade_allowed` is `False` while `account_info().trade_allowed` can still be `True`. Software cannot enable it; surface it to the user. The dashboard exposes it as `/api/status.trade_allowed` and shows a header badge plus a warning.
+
+## Manual pending orders (限价/条件单)
+
+- `POST /api/mt5/pending/order {confirmed, symbol, side, price, lot, sl, tp}` places a pending order; `check_only: true` runs `mt5.order_check` only and must never place anything. The endpoint sets `client.dry_run = False` after user confirmation, same policy as market orders.
+- Order type is auto-picked by `trading.mt5_client.decide_pending_kind(side, price, bid, ask, min_dist)` (pure function, tested): BUY above ask → BUY STOP（到价市价买）, below → BUY LIMIT; SELL mirrored; price inside `stops_level × point` of the market is rejected with a Chinese message. Keep this function pure — the client maps its "LIMIT"/"STOP" strings to MT5 constants.
+- `GET /api/mt5/pending/list` returns ALL magics (manual pendings visible, like live positions); `pending_to_dict` serializes. Cancel via `POST /api/mt5/pending/cancel {confirmed, ticket}` → `TRADE_ACTION_REMOVE`.
+- Chart UX (index.html): right-click → 「挂买单/挂卖单」creates `srChart.draft` {side, symbol, price, sl, tp, lot}; draft lines register as `d-entry`/`d-sl`/`d-tp` in `srChart.layout.lines` so the existing drag machinery grabs them. Dragging `d-entry` TRANSLATES sl/tp by the same offset (structure moves as a unit); dragging d-sl/d-tp moves that line only. `mouseup` on a `d-*` line must NOT open the confirm dialog (only real position sl/tp commits do); confirmation happens via the floating `#sr-draft-bar` → `srDraftConfirm()` → askConfirm with price/lot/sl/tp inputs. Default draft SL/TP offsets: max(1.5×ATR, 0.8%) / max(3×ATR, 1.6%).
+- The chart-page right panel has a 「设置止盈止损」 form (`applySlTp`) reusing `/api/mt5/position/sl|tp`; SL can only be changed, never cleared (`/sl` rejects sl<=0 by design), TP accepts 0 = clear. The two market-order check buttons (检查买单/卖单) were removed on user request — `/api/mt5/order_check` endpoint stays but has no UI button.
 
 ## Support/Resistance (S/R) engine
 

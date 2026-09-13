@@ -4,7 +4,7 @@
 #   python -m venv .venv
 #   .venv\Scripts\python -m pip install -r requirements.txt
 
-# 训练 / 信号计算（训练固定使用 CPU，无需 GPU 相关包）
+# 训练 / 信号计算
 torch
 numpy
 scipy
