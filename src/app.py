@@ -259,6 +259,20 @@ def api_runner_log(lines: int = 60):
     return {"log": _tail_file(RUNNER_LOG, max(10, min(400, lines)))}
 
 
+def _latest_train_log() -> Path | None:
+    """最新一份训练日志（logs/train_*.log 按 mtime）。"""
+    cands = sorted(LOGS_DIR.glob("train_*.log"), key=lambda p: p.stat().st_mtime)
+    return cands[-1] if cands else None
+
+
+@app.get("/api/logs/training")
+def api_training_log(lines: int = 60):
+    path = _latest_train_log()
+    if path is None:
+        return {"log": "", "file": None}
+    return {"log": _tail_file(path, max(10, min(400, lines))), "file": path.name}
+
+
 @app.get("/api/logs/dashboard")
 def api_dashboard_log(lines: int = 60):
     return {"log": _tail_file(LOGS_DIR / "dashboard.log", max(10, min(400, lines)))}
@@ -269,6 +283,8 @@ def api_logs_clear(payload: dict):
     """清空日志文件（写入方以追加模式打开，截断后下一条日志从文件头继续）。"""
     name = str(payload.get("name", "")).strip()
     path = {"runner": RUNNER_LOG, "dashboard": LOGS_DIR / "dashboard.log"}.get(name)
+    if name == "training":
+        raise HTTPException(400, "训练日志按次归档，不支持清空（会随新训练自动分文件）")
     if path is None:
         raise HTTPException(400, "未知的日志类型")
     try:
@@ -283,6 +299,8 @@ def api_logs_clear(payload: dict):
 @app.get("/api/logs/export")
 def api_logs_export(name: str = "runner"):
     path = {"runner": RUNNER_LOG, "dashboard": LOGS_DIR / "dashboard.log"}.get(name)
+    if name == "training":
+        path = _latest_train_log()
     if path is None or not path.exists():
         raise HTTPException(404, "日志文件不存在")
     return FileResponse(
