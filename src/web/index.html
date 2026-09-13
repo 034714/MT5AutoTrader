@@ -140,7 +140,7 @@
     <div class="card" style="margin-bottom:14px">
       <h3>策略信号</h3>
       <table><thead><tr>
-        <th>品种</th><th>策略</th><th>方向</th><th>强度</th><th>仓位值</th><th>K线收盘（本地）</th><th>状态</th>
+        <th>品种</th><th>策略</th><th>周期</th><th>方向</th><th>强度</th><th>仓位值</th><th>K线收盘（本地）</th><th>状态</th>
       </tr></thead><tbody id="ov-signals"><tr><td colspan="7" class="hint">加载中…</td></tr></tbody></table>
     </div>
     <div class="card" style="margin-bottom:14px">
@@ -240,7 +240,7 @@
               <option value="3">岛模式 ×3（抗停滞，耗时×3）</option>
               <option value="5">岛模式 ×5（抗停滞，耗时×5）</option>
             </select></div>
-            <div class="field-help">岛模式：多个种群同时探索、定期交换精英公式，专治"分数卡住不涨"。支持从最近一次完整迁移阶段续训，耗时约为单引擎的岛数倍；若连续多个停滞窗口仍无进步会自动结束并保留当前最优。</div>
+            <div class="field-help">岛模式：多个种群同时探索、定期交换精英公式，专治"分数卡住不涨"。支持从最近一次完整迁移阶段续训，耗时约为单引擎的岛数倍；若连续多个停滞窗口仍无进步会自动结束并保留当前最优。训练结束后最优岛会自动导出为普通检查点——之后切回单引擎即可接着岛模式的成果继续练。</div>
             <div class="row" style="margin-top:8px"><button class="btn small ghost" onclick="loadCheckpoints()">查看/选择续训检查点</button></div>
             <div id="tr-ckpt-box" class="hint" style="margin-top:6px"></div>
           </div>
@@ -529,6 +529,9 @@ function esc(s) {
   return String(s == null ? "" : s).replace(/[&<>"']/g,
     c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
+function stripAnsi(s) {
+  return String(s == null ? "" : s).replace(/\x1b\[[0-9;]*m/g, "");
+}
 // 服务器时区偏移（秒）：MT5 的 K线/成交时间是"服务器墙上时钟"伪时间戳，
 // 减去偏移才是真实 UTC，再按本地时区显示。
 function serverOff() { return window.__srvOff || 0; }
@@ -715,14 +718,14 @@ async function refreshStatus() {
     ? st.config.bindings.map(b => {
         const s = sig[b.symbol];
         if (!s) return "<tr><td>" + esc(b.symbol) + "</td><td class='hint'>" + esc(fileName(b.strategy_file)) +
-          "</td><td colspan='5' class='hint'>等待首个信号…</td></tr>";
+          "</td><td colspan='6' class='hint'>等待首个信号…</td></tr>";
         const stTxt = s.state === "ok" ? "正常" : "<span style='color:var(--red)'>" + esc(s.state || "—") + " " + esc(s.message || "") + "</span>";
         return "<tr><td>" + esc(b.symbol) + "</td><td class='hint'>" + esc(fileName(s.strategy)) +
-          "</td><td>" + fmtDir(s.direction) + "</td><td>" + (s.strength != null ? s.strength : "—") +
+          "</td><td class='hint'>" + esc(s.timeframe || "H1") + "</td><td>" + fmtDir(s.direction) + "</td><td>" + (s.strength != null ? s.strength : "—") +
           "</td><td>" + (s.position != null ? s.position : "—") + "</td><td>" + tsToStr(s.bar_time) +
           "</td><td>" + stTxt + "</td></tr>";
       }).join("")
-    : "<tr><td colspan='7' class='hint'>未绑定策略。到「策略库」页导入并绑定。</td></tr>";
+    : "<tr><td colspan='8' class='hint'>未绑定策略。到「策略库」页导入并绑定。</td></tr>";
   // 持仓（与 MT5 实时同步，含手动仓位；列表结构，同品种可有多笔）
   const posList = rs.positions || [];
   const profitCls = v => v > 0 ? "long" : (v < 0 ? "short" : "flat");
@@ -1010,8 +1013,15 @@ async function pollBacktest() {
     const s = await api("/api/backtest/status");
     let head = s.running ? "回测中…" : "未运行";
     if (!s.running && s.exit_code != null) head += "（退出码 " + s.exit_code + (s.exit_code === 0 ? "，成功" : "，失败") + "）";
-    $("bt-log").textContent = head + "\n\n" + (s.log_tail || "暂无日志");
-    if (!s.running) loadBacktestReport();
+    const tail = stripAnsi(s.log_tail || "");
+    $("bt-log").textContent = head + "\n\n" + (tail || "暂无日志");
+    if (!s.running) {
+      loadBacktestReport();
+      if (s.exit_code != null && s.exit_code !== 0) {
+        const errLine = tail.split("\n").map(l => l.trim()).find(l => l.startsWith("[ERROR]"));
+        showMsg("bt-msg", "回测失败：" + (errLine ? errLine.replace("[ERROR] ", "") : "详见下方日志"), false);
+      }
+    }
   } catch (e) { /* 忽略 */ }
 }
 async function loadBacktestReport(explicit) {

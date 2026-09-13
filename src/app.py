@@ -1149,10 +1149,21 @@ def api_backtest_start(payload: dict):
         raise HTTPException(400, "策略文件不存在")
     cmd = [_venv_python(), "-u", "src/run_backtest.py",
            "--strategy-file", strategy_file]
-    data_file = str(payload.get("data_file", "")).strip()
+    data_file = str(payload.get("data_file", "") or "").strip()
+    if not data_file:
+        # 策略没记录数据文件时，按 品种+周期 到数据目录自动寻找同名 parquet
+        try:
+            meta = load_strategy_file(ROOT / strategy_file)
+            sym, tf = meta["symbol"], meta["timeframe"]
+            cache_dir = Path(load_trader_config().get("kline_cache_dir", r"D:\K线数据"))
+            candidate = cache_dir / f"{sym}_{tf}.parquet"
+            if candidate.exists():
+                data_file = str(candidate)
+        except Exception:
+            data_file = ""
     if data_file:
         if not Path(data_file).exists():
-            raise HTTPException(400, "数据文件不存在")
+            raise HTTPException(400, f"数据文件不存在: {data_file}")
         cmd.extend(["--data-file", data_file])
     commission = float(payload.get("commission", 0.02) or 0.02)
     slippage = float(payload.get("slippage", 0.01) or 0.01)

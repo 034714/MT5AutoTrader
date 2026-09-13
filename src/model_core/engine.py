@@ -1064,12 +1064,14 @@ class AlphaEngine:
             self.training_history.setdefault('batch_uniq_fmls', []).append(uniq_fmls)
             self.training_history.setdefault('batch_fml_div', []).append(fml_div)
 
-            if self.best_formula is not None:
+            if self.best_formula is not None and self.target_symbol:
                 from .vocab import VOCAB_VERSION
                 strategy_data = {
                     "vocab_version": VOCAB_VERSION,
                     "symbol": self.target_symbol,
                     "timeframe": self.timeframe,
+                    "data_file": self.data_file,
+                    "mode": self.mode,
                     "formula": self.best_formula,
                     "best_score": self.best_score,
                 }
@@ -1245,6 +1247,8 @@ class AlphaEngine:
                     "vocab_version": VOCAB_VERSION,
                     "symbol": self.target_symbol,
                     "timeframe": self.timeframe,
+                    "data_file": self.data_file,
+                    "mode": self.mode,
                     "formula": self.best_formula,
                     "best_score": self.best_score,
                 }

@@ -21,6 +21,10 @@ import matplotlib.pyplot as plt
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+from utils.train_logging import configure_train_stdio
+
+configure_train_stdio()  # 强制 UTF-8、去 ANSI 彩色码（否则看板回测日志全是乱码）
+
 from config import Config
 from data_pipeline.parquet_manager import ParquetDataManager
 from backtest_viz import BacktestEngine

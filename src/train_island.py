@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import sys
 import time
@@ -147,6 +148,20 @@ def train_island_from_file(
         pathlib.Path("strategies", "best_island_strategy.json").unlink(missing_ok=True)
     except OSError:
         pass
+
+    # 岛→单引擎续训桥：把最优岛的完整状态导出为普通单引擎检查点，
+    # 之后单引擎「自动续训」会直接接上岛模式的成果继续训练。
+    if itrain.global_best_formula is not None and itrain._step > 0:
+        import torch as _torch
+        best_idx = itrain.global_best_island if itrain.global_best_island >= 0 else 0
+        out = pathlib.Path("checkpoints") / f"ckpt_{tag}_step_{itrain._step:04d}.pt"
+        out.parent.mkdir(exist_ok=True)
+        payload = itrain.islands[best_idx].checkpoint_state(itrain._step)
+        tmp = str(out) + ".tmp"
+        _torch.save(payload, tmp)
+        os.replace(tmp, out)
+        print(f"  [岛→单引擎] 最优岛状态已导出为普通检查点 {out.name}，"
+              f"单引擎下次训练会从这里继续")
 
     # 用全局最优所在的岛引擎对象保存 best_{symbol}.json
     # （复用 train_file._save_strategy 的"磁盘更优不覆盖"守卫）
