@@ -26,7 +26,9 @@ def group_history_deals(deals, magic: int | None = None) -> dict[str, list[dict]
 
     Args:
         deals: mt5.history_deals_get() 的返回值（namedtuple 列表）。
-        magic: 只保留该 magic 的记录；None 表示不过滤。
+        magic: 「归属」过滤——只计入**入场成交**带该 magic 的仓位（本软件开的仓）。
+               出场成交（服务器止损/止盈、手动平仓，magic 通常是 0）一律计入，
+               否则手动平掉的仓位会被误判成"未完全平仓"。
 
     Returns:
         {"closed": [...], "open": [...]}，各自按时间倒序。
@@ -36,8 +38,6 @@ def group_history_deals(deals, magic: int | None = None) -> dict[str, list[dict]
     """
     groups: dict[int, list] = {}
     for d in deals or []:
-        if magic is not None and getattr(d, "magic", None) != magic:
-            continue
         groups.setdefault(int(getattr(d, "position_id", 0) or 0), []).append(d)
 
     closed: list[dict] = []
@@ -50,6 +50,10 @@ def group_history_deals(deals, magic: int | None = None) -> dict[str, list[dict]
         exits = [d for d in ds if int(getattr(d, "entry", -1)) in (DEAL_ENTRY_OUT, DEAL_ENTRY_OUT_BY)]
         if not entries:
             continue
+        if magic is not None and all(
+            int(getattr(d, "magic", 0) or 0) != int(magic) for d in entries
+        ):
+            continue  # 不是本软件开的仓（scope=mine 时排除）
         entry = entries[0]
         open_volume = sum(float(d.volume) for d in entries)
         close_volume = sum(float(d.volume) for d in exits)

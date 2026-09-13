@@ -936,6 +936,48 @@ def test_pending_kind():
     check("卖贴价拒绝对称", kind is None, why)
 
 
+def _deal(position_id, typ, entry, volume, magic, profit=0.0, price=100.0, time=0):
+    """构造最小 deal 假对象（group_history_deals 用）。"""
+    from types import SimpleNamespace
+    return SimpleNamespace(position_id=position_id, type=typ, entry=entry,
+                           volume=volume, magic=magic, profit=profit,
+                           commission=0.0, swap=0.0, price=price, time=time,
+                           symbol="BTCUSD_", comment="")
+
+
+def test_history_partial_close():
+    """部分平仓归类：手动/止损平仓（magic=0）也算出场；没平完的归「持仓中」。"""
+    from trading.history import group_history_deals
+    MAGIC = 20260913
+    IN, OUT = 0, 1
+    # 本软件开 0.1 → 止盈一半平 0.05（本软件）→ 剩余 0.05 被手动平掉（magic=0）
+    deals = [
+        _deal(1, 0, IN, 0.1, MAGIC, time=100),
+        _deal(1, 1, OUT, 0.05, MAGIC, profit=50.0, time=200),
+        _deal(1, 1, OUT, 0.05, 0, profit=22.39, time=300),   # 手动平，magic=0
+    ]
+    g = group_history_deals(deals, magic=MAGIC)
+    check("手动平完的仓位归「已平仓」", len(g["closed"]) == 1 and len(g["open"]) == 0,
+          str(g))
+    check("已平仓盈亏含手动平仓那截", abs(g["closed"][0]["profit"] - 72.39) < 0.01,
+          str(g["closed"][0]["profit"]))
+    # 只部分平仓、剩余还在 → 「持仓中」+ 剩余量
+    deals2 = [_deal(2, 0, IN, 0.1, MAGIC, time=100),
+              _deal(2, 1, OUT, 0.04, MAGIC, profit=13.42, time=200)]
+    g2 = group_history_deals(deals2, magic=MAGIC)
+    check("部分平仓归「持仓中」", len(g2["open"]) == 1 and g2["open"][0]["partial"] is True,
+          str(g2))
+    check("剩余手数正确", abs(g2["open"][0]["remaining_volume"] - 0.06) < 1e-9,
+          str(g2["open"][0]["remaining_volume"]))
+    check("已实现盈亏=已平部分", abs(g2["open"][0]["profit"] - 13.42) < 0.01,
+          str(g2["open"][0]["profit"]))
+    # 别人开的仓（入场 magic 不同）在 scope=mine 下排除
+    deals3 = deals + [_deal(3, 0, IN, 0.2, 999, time=400)]
+    g3 = group_history_deals(deals3, magic=MAGIC)
+    ids = [r["position_id"] for r in g3["closed"] + g3["open"]]
+    check("非本软件开的仓被排除", 3 not in ids, str(ids))
+
+
 #   python tests/test_trading.py signal       # 信号阈值/真实策略端到端
 #   python tests/test_trading.py quick        # 秒级核心冒烟
 #   python tests/test_trading.py -v ...       # 显示每个 PASS（默认只报失败）
@@ -946,7 +988,8 @@ DOMAINS: dict[str, tuple] = {
              test_profit_pct, test_manual_sl_respected),
     "runner": (test_no_duplicate_open, test_reverse_close_then_open,
                test_close_fail_blocks_open, test_dry_run_book, test_live_sync,
-               test_max_positions, test_strategy_loading, test_pending_kind),
+               test_max_positions, test_strategy_loading, test_pending_kind,
+               test_history_partial_close),
     "sr": (test_sr_levels, test_sr_sl_tp_buy, test_sr_fixed_sl_never_loosened,
            test_sr_sl_out_of_band_falls_back, test_sr_respect_tp_level,
            test_sr_dry_run_tp_fill, test_sr_partial_plan,
