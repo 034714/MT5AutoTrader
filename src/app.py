@@ -801,6 +801,30 @@ def api_mt5_pending_order(payload: dict):
     return {"ok": result["ok"], "message": msg, "kind": kind, "retcode": result.get("retcode")}
 
 
+@app.post("/api/mt5/pending/modify")
+def api_mt5_pending_modify(payload: dict):
+    """修改挂单触发价（止损止盈随平移，未给的保持原值）。网页二次确认。"""
+    if not payload.get("confirmed"):
+        raise HTTPException(400, "修改挂单需要二次确认")
+    client = _get_mt5_client()
+    if client is None:
+        raise HTTPException(400, "MT5 未连接")
+    ticket = int(payload.get("ticket", 0) or 0)
+    price = float(payload.get("price", 0) or 0)
+    sl = float(payload.get("sl", 0) or 0)
+    tp = float(payload.get("tp", 0) or 0)
+    if ticket <= 0 or price <= 0:
+        raise HTTPException(400, "ticket 或触发价无效")
+    client.dry_run = False  # 用户明确确认后的真实动作
+    result = client.modify_order(ticket, price, sl=sl or None, tp=tp or None)
+    if result["ok"]:
+        logger.info(f"[挂单] ticket={ticket} 触发价改为 {price} SL={sl or '原值'} TP={tp or '原值'}")
+        return {"ok": True, "message": f"挂单 ticket={ticket} 已改为 @ {price}"}
+    hint = retcode_hint(result.get("retcode"))
+    msg = f"修改失败 retcode={result.get('retcode')} {result.get('comment')}"
+    return {"ok": False, "message": (msg + "｜" + hint) if hint else msg}
+
+
 @app.post("/api/mt5/pending/cancel")
 def api_mt5_pending_cancel(payload: dict):
     if not payload.get("confirmed"):

@@ -456,6 +456,33 @@ class MT5Client:
             return []
         return list(orders) if orders else []
 
+    def modify_order(self, ticket: int, price: float,
+                     sl: float | None = None, tp: float | None = None) -> dict[str, Any]:
+        """修改挂单触发价/止损/止盈（TRADE_ACTION_MODIFY）。未给的字段保持原值。
+
+        返回 {"ok","retcode","comment","order"}；挂单不存在时 ok=False。
+        """
+        if self.dry_run:
+            logger.info(f"[DRY-RUN] 修改挂单 ticket={ticket} price→{price} SL→{sl} TP→{tp}")
+            return {"ok": True, "retcode": 10009, "comment": "dry-run", "order": int(ticket)}
+        target = None
+        for o in self.get_orders():
+            if int(o.ticket) == int(ticket):
+                target = o
+                break
+        if target is None:
+            return {"ok": False, "retcode": None,
+                    "comment": "挂单不存在（可能已成交或已撤销）", "order": int(ticket)}
+        request: dict[str, Any] = {
+            "action": mt5.TRADE_ACTION_MODIFY,
+            "order": int(ticket),
+            "price": float(price) if price and price > 0 else float(target.price_open),
+            "sl": float(sl) if sl is not None and sl > 0 else float(getattr(target, "sl", 0) or 0),
+            "tp": float(tp) if tp is not None and tp > 0 else float(getattr(target, "tp", 0) or 0),
+            "type_time": int(getattr(target, "type_time", 0) or mt5.ORDER_TIME_GTC),
+        }
+        return self._send_request(request)
+
     def cancel_order(self, ticket: int) -> dict[str, Any]:
         """撤销挂单（TRADE_ACTION_REMOVE）。返回 {"ok","retcode","comment","order"}。"""
         if self.dry_run:
@@ -528,8 +555,9 @@ class MT5Client:
         }
         if new_sl is not None and new_sl > 0:
             request["sl"] = float(new_sl)
-        if tp is not None and tp > 0:
-            request["tp"] = float(tp)
+        if tp is not None:
+            # 0 = 显式清除止盈（TRADE_ACTION_SLTP 里 tp=0 才是清除）；None = 保持不变
+            request["tp"] = float(tp) if tp > 0 else 0.0
         result = self._send_request(request)
         return bool(result["ok"])
 
