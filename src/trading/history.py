@@ -30,7 +30,9 @@ def group_history_deals(deals, magic: int | None = None) -> dict[str, list[dict]
 
     Returns:
         {"closed": [...], "open": [...]}，各自按时间倒序。
-        closed = 已有出场成交的交易；open = 只有入场（当前持仓中）。
+        closed = 已完全平仓（出场量 >= 入场量）；open = 仍在持仓（含部分平仓，
+        带 partial=True、close_volume=已平量、remaining_volume=剩余量，
+        profit=已实现盈亏）。
     """
     groups: dict[int, list] = {}
     for d in deals or []:
@@ -61,6 +63,9 @@ def group_history_deals(deals, magic: int | None = None) -> dict[str, list[dict]
             close_price = sum(float(d.price) * float(d.volume) for d in exits) / total_vol
             close_time = int(getattr(exits[-1], "time", 0))
 
+        # 只有出场量 >= 入场量才算全平；部分平仓归入「持仓中」并标注
+        fully_closed = bool(exits) and close_volume >= open_volume - 1e-9
+
         record = {
             "position_id": int(pid),
             "symbol": str(getattr(entry, "symbol", "")),
@@ -68,14 +73,16 @@ def group_history_deals(deals, magic: int | None = None) -> dict[str, list[dict]
             "volume": round(open_volume, 2),
             "open_price": float(entry.price),
             "open_time": int(getattr(entry, "time", 0)),
-            "closed": bool(exits),
+            "closed": fully_closed,
+            "partial": bool(exits) and not fully_closed,
             "close_volume": round(close_volume, 2),
+            "remaining_volume": round(open_volume - close_volume, 2),
             "close_price": round(close_price, 5) if close_price else None,
             "close_time": close_time,
             "profit": round(profit, 2),
             "comment": str(getattr(entry, "comment", "") or ""),
         }
-        if exits:
+        if fully_closed:
             closed.append(record)
         else:
             open_list.append(record)

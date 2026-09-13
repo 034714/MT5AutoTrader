@@ -54,7 +54,7 @@
 - `/api/mt5/position/close|sl|tp` act on REAL MT5 positions by ticket (any position carrying the software's magic, manual or runner-opened). They set `client.dry_run = False` explicitly because they are user-confirmed actions, independent of the runner's dry-run config.
 - The overview merges positions from the runner status file; in live mode the runner reports ALL magic positions from MT5 (not just its book), so manual positions are visible too.
 - After a web close, a still-bound strategy may reopen the position on the next closed bar — the UI warns about this; suggest unbinding first.
-- `trading/history.py::group_history_deals` merges `history_deals_get` output by `position_id` into trades (partial closes aggregated; profit includes commission + swap). Position ids with no exit deals are reported as "open" records.
+- `trading/history.py::group_history_deals` merges `history_deals_get` output by `position_id` into trades (partial closes aggregated; profit includes commission + swap). A position counts as closed ONLY when exit volume ≥ entry volume (`close_volume >= open_volume`); partially-closed positions are `open` records with `partial: true`, `close_volume`, `remaining_volume` and realized `profit` — the dashboard shows them under 持仓中的建仓记录, never in 已平仓交易. `position_to_dict` carries `realized` (sum of all deals' profit+commission+swap for that ticket, from `history_deals_get(position=...)`) and `closed_volume`, shown as the 总览 已实现盈亏 column.
 
 ## Trading safety
 

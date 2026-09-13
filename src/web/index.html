@@ -242,8 +242,8 @@
     <div class="card" style="margin-bottom:14px">
       <h3>当前持仓（与 MT5 实时同步）</h3>
       <table><thead><tr>
-        <th>品种</th><th>方向</th><th>手数</th><th>开仓价</th><th>现价</th><th>止损</th><th>止盈</th><th>浮动盈亏</th><th>开仓时间</th><th>来源</th><th>操作</th>
-      </tr></thead><tbody id="ov-positions"><tr><td colspan="11" class="hint">加载中…</td></tr></tbody></table>
+        <th>品种</th><th>方向</th><th>手数</th><th>开仓价</th><th>现价</th><th>止损</th><th>止盈</th><th>浮动盈亏</th><th>已实现盈亏</th><th>开仓时间</th><th>来源</th><th>操作</th>
+      </tr></thead><tbody id="ov-positions"><tr><td colspan="12" class="hint">加载中…</td></tr></tbody></table>
       <div class="hint" style="margin-top:8px">「平仓」直接向 MT5 发送平仓指令；修改止损/止盈同理。注意：平仓后若绑定策略信号仍在，Runner 可能在下一根收盘 K 线重新开仓——想彻底不交易请先到「策略库」解绑。</div>
       <div id="ov-msg" class="msg"></div>
     </div>
@@ -797,14 +797,25 @@ function drawSeriesChart(canvas, series, opts) {
       ctx.fill();
     }
   });
-  // 末值小圆点与数值（取最后一条线，避免叠字）
-  const top = series[series.length - 1];
-  const lastP = top.points[top.points.length - 1];
-  const lastX = px(lastP[0]), lastY = py(lastP[1]);
-  ctx.beginPath(); ctx.arc(lastX, lastY, 3, 0, Math.PI * 2);
-  ctx.fillStyle = top.color; ctx.fill();
-  ctx.fillStyle = "#d8e1ea"; ctx.font = "11px Consolas"; ctx.textAlign = "left";
-  ctx.fillText(fmt(lastP[1]), Math.min(lastX + 6, w - 48), Math.max(padT + 10, lastY - 6));
+  // 每条线末值小圆点 + 数值标签（标签重叠时自动错开）
+  ctx.font = "11px Consolas";
+  const tags = [];
+  series.forEach(s => {
+    const lp = s.points[s.points.length - 1];
+    const X = px(lp[0]), Y = py(lp[1]);
+    ctx.beginPath(); ctx.arc(X, Y, 3, 0, Math.PI * 2);
+    ctx.fillStyle = s.color || "#2ecc71"; ctx.fill();
+    tags.push({ y: Math.max(padT + 10, Y - 6), text: fmt(lp[1]), color: s.color || "#2ecc71" });
+  });
+  tags.sort((a, b) => a.y - b.y);
+  for (let i = 1; i < tags.length; i++) {
+    if (tags[i].y - tags[i - 1].y < 13) tags[i].y = tags[i - 1].y + 13;
+  }
+  ctx.textAlign = "left";
+  tags.forEach(t => {
+    ctx.fillStyle = t.color;
+    ctx.fillText(t.text, Math.min(w - 48, w - padR - ctx.measureText(t.text).width), t.y);
+  });
   // 图例
   if (opts && opts.legendEl) {
     $(opts.legendEl).innerHTML = series.map(s =>
@@ -955,6 +966,10 @@ async function refreshStatus() {
         const profitTxt = p.profit != null
           ? "<span class='" + profitCls(p.profit) + "'>" + p.profit.toFixed(2) + (p.profit_pct != null ? "（" + p.profit_pct + "%）" : "") + "</span>"
           : (p.profit_pct != null ? "<span class='" + profitCls(p.profit_pct) + "'>" + p.profit_pct + "%</span>" : "—");
+        const realizedTxt = p.realized != null
+          ? "<span class='" + profitCls(p.realized) + "'>" + p.realized.toFixed(2) + "</span>" +
+            (p.closed_volume > 0 ? "<div class='hint'>已平 " + p.closed_volume + "手</div>" : "")
+          : "—";
         const actions = isReal
           ? "<button class='btn small danger' onclick=\"closePosition(" + p.ticket + ",'" + esc(sym) + "')\">平仓</button> " +
             "<button class='btn small ghost' onclick=\"editStop(" + p.ticket + ",'" + esc(sym) + "'," + (p.sl || 0) + "," + (p.current_price || 0) + ",'" + p.direction + "')\">止损</button> " +
@@ -963,10 +978,10 @@ async function refreshStatus() {
         return "<tr><td>" + esc(sym) + "</td><td>" + dirTxt + "</td><td>" + p.volume +
           "</td><td>" + p.open_price + "</td><td>" + (p.current_price != null ? p.current_price : "—") +
           "</td><td>" + (p.sl || "—") + "</td><td>" + (p.tp || "—") +
-          "</td><td>" + profitTxt + "</td><td class='hint'>" + esc(p.open_time || "—") +
+          "</td><td>" + profitTxt + "</td><td>" + realizedTxt + "</td><td class='hint'>" + esc(p.open_time || "—") +
           "</td><td>" + (p.dry_run ? "dry-run 模拟" : "MT5 实仓") + "</td><td>" + actions + "</td></tr>";
       }).join("")
-    : "<tr><td colspan='11' class='hint'>暂无持仓</td></tr>";
+    : "<tr><td colspan='12' class='hint'>暂无持仓</td></tr>";
   // 图表分析页的紧凑持仓速览
   const chBox = $("ch-positions");
   if (chBox) chBox.innerHTML = posList.length
@@ -2489,12 +2504,22 @@ async function loadHistory() {
     $("hs-closed").innerHTML = closedRows
       ? "<table><thead><tr><th>品种</th><th>方向</th><th>手数</th><th>开仓价</th><th>开仓时间</th><th>平仓价</th><th>平仓时间</th><th>净盈亏</th><th>备注</th></tr></thead><tbody>" + closedRows + "</tbody></table>"
       : "<div class='hint'>范围内没有已平仓的交易。</div>";
-    const openRows = (r.open || []).map(t =>
-      "<tr><td>" + esc(t.symbol) + "</td><td>" + (t.direction === "BUY" ? "<span class='long'>多</span>" : "<span class='short'>空</span>") +
-      "</td><td>" + t.volume + "</td><td>" + t.open_price + "</td><td class='hint'>" + tsToStr(t.open_time) +
-      "</td><td class='hint'>" + esc(t.comment || "") + "</td></tr>").join("");
+    const openRows = (r.open || []).map(t => {
+      const volTxt = t.partial
+        ? "<b>" + t.remaining_volume + "</b>手" +
+          "<div class='hint'>已部分平仓 " + t.close_volume + "手</div>"
+        : t.volume + "手";
+      const relTxt = t.partial
+        ? "<span class='" + (t.profit > 0 ? "long" : (t.profit < 0 ? "short" : "hint")) + "'>" +
+          (t.profit > 0 ? "+" : "") + t.profit.toFixed(2) + "</span>"
+        : "—";
+      return "<tr><td>" + esc(t.symbol) + "</td><td>" + (t.direction === "BUY" ? "<span class='long'>多</span>" : "<span class='short'>空</span>") +
+        "</td><td>" + volTxt + "</td><td>" + t.open_price + "</td><td class='hint'>" + tsToStr(t.open_time) +
+        "</td><td>" + relTxt + "</td><td class='hint'>" + esc(t.comment || "") + "</td></tr>";
+    }).join("");
     $("hs-open").innerHTML = openRows
-      ? "<table><thead><tr><th>品种</th><th>方向</th><th>手数</th><th>开仓价</th><th>开仓时间</th><th>备注</th></tr></thead><tbody>" + openRows + "</tbody></table>"
+      ? "<table><thead><tr><th>品种</th><th>方向</th><th>剩余手数</th><th>开仓价</th><th>开仓时间</th><th>已实现盈亏</th><th>备注</th></tr></thead><tbody>" + openRows + "</tbody></table>" +
+        "<div class='hint'>部分平仓的仓位列在这里：显示剩余手数和已落袋的盈亏，全部平仓后才计入「已平仓交易」。</div>"
       : "<div class='hint'>没有持仓中的建仓记录。</div>";
     // ── 复盘统计（卡片式）────────────────────────────────────────────
     if (!closed.length) {

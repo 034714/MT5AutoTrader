@@ -70,6 +70,18 @@ def position_to_dict(client: "MT5Client", p, server_offset: int | None = None) -
         open_time = datetime.fromtimestamp(real_utc).strftime("%Y-%m-%d %H:%M:%S")
     else:
         open_time = ""
+    # 已实现盈亏：该仓位全部成交（含部分平仓）的盈亏+手续费+库存费之和
+    realized = None
+    closed_volume = 0.0
+    try:
+        pos_deals = mt5.history_deals_get(position=int(p.ticket))
+        if pos_deals:
+            realized = round(sum(float(d.profit) + float(d.commission) + float(d.swap)
+                                 for d in pos_deals), 2)
+            closed_volume = round(sum(float(d.volume) for d in pos_deals
+                                      if int(getattr(d, "entry", -1)) in (1, 3)), 2)
+    except Exception:
+        realized = None
     return {
         "ticket": int(p.ticket),
         "symbol": symbol,
@@ -81,6 +93,8 @@ def position_to_dict(client: "MT5Client", p, server_offset: int | None = None) -
         "tp": tp,
         "profit": round(profit, 2),
         "profit_pct": profit_pct,
+        "realized": realized,
+        "closed_volume": closed_volume,
         "open_time": open_time,
         "dry_run": False,
     }
