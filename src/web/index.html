@@ -153,6 +153,8 @@
       <div class="card">
         <h3>MT5 账户</h3>
         <div id="ov-account"><div class="hint">加载中…</div></div>
+        <canvas id="eq-spark" height="54" style="width:100%;height:54px;background:var(--panel2);border:1px solid var(--border);border-radius:6px;margin-top:8px"></canvas>
+        <div class="hint" style="margin-top:3px">净值走势（迷你）</div>
       </div>
       <div class="card">
         <h3>Runner</h3>
@@ -339,10 +341,8 @@
         <div id="tr-chart-meta" class="hint" style="margin-top:4px">暂无训练历史</div>
         <div class="card" style="background:var(--panel2);margin-top:14px">
           <h3>训练产物</h3>
-          <div class="kv"><span class="k">最优策略</span><span><code>strategies/best_品种.json</code></span></div>
-          <div class="kv"><span class="k">检查点</span><span><code>checkpoints/</code></span></div>
-          <div class="kv"><span class="k">训练日志</span><span><code>logs/train_*.log</code></span></div>
-          <div class="hint" style="margin-top:8px">训练完成后，打开「策略库」页即可看到新策略；交易引擎不会自动绑定，需手动绑定品种。</div>
+          <div id="tr-artifacts" class="hint">加载中…</div>
+          <div class="hint" style="margin-top:8px">训练完成后，打开「策略库」页即可看到新策略；交易引擎不会自动绑定，需手动绑定品种。检查点在「查看/选择续训检查点」里可单个删除。</div>
         </div>
         <h3 style="margin-top:14px">实时日志</h3>
         <pre class="log" id="tr-log" style="margin-top:8px">暂无日志</pre>
@@ -484,14 +484,14 @@
       <div class="card">
         <h3>复盘统计</h3>
         <div class="row"><label>范围</label>
-          <select id="hs-days">
+          <select id="hs-days" onchange="loadHistory()">
             <option value="1">最近 1 天</option>
             <option value="7" selected>最近 7 天</option>
             <option value="30">最近 30 天</option>
             <option value="90">最近 90 天</option>
           </select>
           <label>成交来源</label>
-          <select id="hs-scope">
+          <select id="hs-scope" onchange="loadHistory()">
             <option value="mine" selected>本软件的成交</option>
             <option value="all">账户全部成交（含手动/其它软件）</option>
           </select>
@@ -504,11 +504,9 @@
         </div>
       </div>
       <div class="card">
-        <h3>分品种小结</h3>
-        <div id="hs-sym"><div class="hint">加载中…</div></div>
-        <div class="hint" style="margin-top:8px">账户净值走势</div>
-        <canvas id="eq-chart" height="180" style="width:100%;height:180px;background:var(--panel2);border:1px solid var(--border);border-radius:6px"></canvas>
-        <div id="eq-chart-meta" class="hint" style="margin-top:4px">页面开着就会持续积累数据（看板重启后从零开始）。</div>
+        <h3>账户净值走势</h3>
+        <canvas id="eq-chart" height="220" style="width:100%;height:220px;background:var(--panel2);border:1px solid var(--border);border-radius:6px"></canvas>
+        <div id="eq-chart-meta" class="hint" style="margin-top:6px">历史余额由成交流水推算；在线采样页面开着持续积累。</div>
       </div>
     </div>
     <div class="card" style="margin-bottom:14px">
@@ -624,18 +622,20 @@ function drawLineChart(canvas, points, opts) {
   if (hi - lo < 1e-9) { hi += 1; lo -= 1; }
   const pad = (hi - lo) * 0.12; lo -= pad; hi += pad;
   const x0 = xs[0], x1 = xs[xs.length - 1];
-  const px = t => 44 + (t - x0) / ((x1 - x0) || 1) * (w - 58);
-  const py = v => 10 + (1 - (v - lo) / (hi - lo)) * (h - 30);
+  const bare = opts && opts.bare;
+  const padL = bare ? 8 : 44, padB = bare ? 8 : 20, padR = bare ? 8 : 14, padT2 = bare ? 8 : 10;
+  const px = t => padL + (t - x0) / ((x1 - x0) || 1) * (w - padL - padR);
+  const py = v => padT2 + (1 - (v - lo) / (hi - lo)) * (h - padT2 - padB);
   // 网格与 Y 轴刻度
   ctx.strokeStyle = "#2d3948"; ctx.fillStyle = "#8a98a8";
   ctx.font = "10px Consolas";
-  for (let i = 0; i <= 3; i++) {
+  if (!bare) for (let i = 0; i <= 3; i++) {
     const v = lo + (hi - lo) * i / 3, y = py(v);
     ctx.beginPath(); ctx.moveTo(44, y); ctx.lineTo(w - 8, y); ctx.stroke();
     ctx.fillText(fmt(v), 4, y + 3);
   }
   // X 轴刻度（可选）：opts.xFmt(t) 返回横轴文案，画 4 个均匀刻度
-  if (opts && opts.xFmt) {
+  if (opts && opts.xFmt && !bare) {
     ctx.textAlign = "center";
     for (let i = 0; i <= 4; i++) {
       const t = x0 + (x1 - x0) * i / 4;
@@ -650,7 +650,7 @@ function drawLineChart(canvas, points, opts) {
   points.forEach((p, i) => { const X = px(p[0]), Y = py(p[1]); i ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y); });
   const lastX = px(x1), lastY = py(ys[ys.length - 1]);
   ctx.strokeStyle = color; ctx.lineWidth = 1.6; ctx.stroke();
-  ctx.lineTo(lastX, h - 20); ctx.lineTo(px(x0), h - 20); ctx.closePath();
+  ctx.lineTo(lastX, h - padB); ctx.lineTo(px(x0), h - padB); ctx.closePath();
   ctx.fillStyle = fill;
   ctx.fill();
   ctx.beginPath(); ctx.arc(lastX, lastY, 3, 0, Math.PI * 2);
@@ -848,7 +848,8 @@ async function loadStrategies() {
     const err = s.error ? "<div class='hint' style='color:var(--red)'>" + esc(s.error) + "</div>" : "";
     return "<tr><td>" + esc(s.name) + "</td><td>" + esc(s.symbol) + "</td><td>" + esc(s.timeframe) +
       "</td><td>" + score + "</td><td class='hint' style='max-width:280px;word-break:break-all'>" + esc(s.formula_decoded || "") + "</td>" +
-      "<td><button class='btn small danger' onclick=\"delStrategy('" + esc(s.name) + "')\">删除</button></td></tr>" + err;
+      "<td><button class='btn small ghost' onclick=\"quickBacktest('" + esc(s.file).replace(/\\/g, "\\\\") + "')\">回测</button> " +
+      "<button class='btn small danger' onclick=\"delStrategy('" + esc(s.name) + "')\">删除</button></td></tr>" + err;
   }).join("");
   $("st-list").innerHTML = data.strategies.length
     ? "<table><thead><tr><th>文件</th><th>品种</th><th>周期</th><th>分数</th><th>公式</th><th></th></tr></thead><tbody>" + rows + "</tbody></table>"
@@ -868,6 +869,12 @@ async function loadStrategyDropdowns() {
     $("bind-strategy").innerHTML = opts || "<option value=''>（无可用策略）</option>";
     $("bt-strategy").innerHTML = opts || "<option value=''>（无可用策略）</option>";
   } catch (e) { /* 下拉刷新失败忽略 */ }
+}
+function quickBacktest(file) {
+  const btn = document.querySelector('button[data-tab=backtest]');
+  if (btn) btn.click();
+  $("bt-strategy").value = file;
+  showMsg("bt-msg", "已选策略 " + fileName(file) + "，确认范围后点「开始回测」", true);
 }
 async function delStrategy(name) {
   askConfirm("删除策略", "确定删除 " + name + "？（若已绑定会同时解绑）", async () => {
@@ -1010,6 +1017,8 @@ async function loadEquityChart() {
       xFmt: t => { const d = new Date(t); return (d.getMonth() + 1) + "/" + d.getDate() + " " +
         String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0"); },
     });
+    const spark = $("eq-spark");
+    if (spark) drawLineChart(spark, all, { color: "#2ecc71", bare: true, fmt: v => v.toFixed(0) });
     if (all.length >= 2) {
       const ys = all.map(p => p[1]);
       $("eq-chart-meta").textContent =
@@ -1095,6 +1104,14 @@ async function pollTraining() {
     } else {
       $("tr-info").innerHTML = "<div class='hint'>未运行。</div>";
       _trLast = null;
+    }
+    // 训练产物实时状态
+    const art = s.artifacts || {};
+    if (art.checkpoints != null) {
+      $("tr-artifacts").innerHTML =
+        "<div class='kv'><span class='k'>检查点</span><span>" + art.checkpoints + " 个，共 " + art.checkpoints_mb + " MB（每品种+周期仅留最近 2 个）</span></div>" +
+        "<div class='kv'><span class='k'>策略文件</span><span>" + art.strategies + " 个（strategies/）</span></div>" +
+        "<div class='kv'><span class='k'>训练日志</span><span>logs/train_*.log</span></div>";
     }
     loadTrainCurve();
   } catch (e) { /* 忽略 */ }
@@ -1409,6 +1426,7 @@ async function loadSRChart(silent) {
   const symbol = inp.value.trim();
   if (!symbol) { $("sr-chart-meta").textContent = "请先输入品种（可从下拉列表选 MT5 全部品种）。"; return; }
   const tf = $("sr-chart-tf").value;
+  try { localStorage.setItem("mt5.chart", JSON.stringify({ symbol, tf })); } catch (e) { /* 忽略 */ }
   if (srChart.loading) return;
   srChart.loading = true;
   if (srChart.loadedForSymbol !== symbol) {
@@ -1986,16 +2004,6 @@ async function loadHistory() {
       color: total >= 0 ? "#2ecc71" : "#e74c3c", fmt: v => v.toFixed(0),
       xFmt: t => { const d = new Date(t); return (d.getMonth() + 1) + "/" + d.getDate(); },
     });
-    const bySym = {};
-    closed.forEach(t => {
-      const s = bySym[t.symbol] = bySym[t.symbol] || { n: 0, win: 0, pnl: 0 };
-      s.n++; if (t.profit > 0) s.win++; s.pnl += t.profit;
-    });
-    $("hs-sym").innerHTML = "<table><thead><tr><th>品种</th><th>笔数</th><th>胜率</th><th>净盈亏</th></tr></thead><tbody>" +
-      Object.keys(bySym).sort((a, b) => bySym[b].pnl - bySym[a].pnl).map(sym => {
-        const s = bySym[sym];
-        return "<tr><td>" + esc(sym) + "</td><td>" + s.n + "</td><td>" + (s.win / s.n * 100).toFixed(0) + "%</td><td>" + money(s.pnl) + "</td></tr>";
-      }).join("") + "</tbody></table>";
   } catch (e) {
     $("hs-closed").innerHTML = "<span class='hint' style='color:var(--red)'>加载失败：" + esc(e.message) + "</span>";
     $("hs-open").innerHTML = "";
@@ -2052,11 +2060,20 @@ setInterval(() => {
 
 // ── 初始化 ────────────────────────────────────────────────
 (async function init() {
+  // 图表品种/周期记忆（上次看什么，这次还看什么）
+  try {
+    const saved = JSON.parse(localStorage.getItem("mt5.chart") || "null");
+    if (saved && saved.symbol) {
+      $("sr-chart-symbol").value = saved.symbol;
+      if (saved.tf) $("sr-chart-tf").value = saved.tf;
+    }
+  } catch (e) { /* 忽略 */ }
   refreshStatus();
   loadEquityChart();
   try { fillRiskForm(await api("/api/config")); } catch (e) { /* 忽略 */ }
   loadDataFiles();
   loadStrategyDropdowns();
+  loadSRChart();
   window.addEventListener("resize", () => { loadEquityChart(); loadTrainCurve(); });
   window.addEventListener("error", ev => console.error("页面JS错误:", ev.message));
 })();

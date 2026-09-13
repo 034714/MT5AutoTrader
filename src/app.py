@@ -1135,6 +1135,15 @@ def api_training_status():
     if int(args.get("islands", 0) or 0) > 1:
         info["engine"] = f"island×{args['islands']}"
     st["info"] = info
+    # 训练产物实时状态：检查点占用 + 策略文件
+    ck_dir = ROOT / "checkpoints"
+    ck_files = list(ck_dir.glob("*.pt")) if ck_dir.exists() else []
+    ck_mb = round(sum(f.stat().st_size for f in ck_files) / 1048576, 1)
+    st["artifacts"] = {
+        "checkpoints": len(ck_files),
+        "checkpoints_mb": ck_mb,
+        "strategies": len(list((ROOT / "strategies").glob("*.json"))),
+    }
     return st
 
 
