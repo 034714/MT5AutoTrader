@@ -823,21 +823,25 @@ def api_position_tp(payload: dict):
 # ── 历史成交 ────────────────────────────────────────────────────────
 
 @app.get("/api/mt5/history")
-def api_mt5_history(days: int = 30):
-    """从 MT5 读取真实成交历史，按 position 归并成交易记录。"""
+def api_mt5_history(days: int = 30, scope: str = "mine"):
+    """从 MT5 读取真实成交历史，按 position 归并成交易记录。
+
+    scope: "mine"=只看本软件 magic 的成交（默认）；"all"=账户全部成交（复盘用）。
+    """
     client = _get_mt5_client()
     if client is None:
         raise HTTPException(400, "MT5 未连接")
     import MetaTrader5 as mt5
     from trading.history import group_history_deals
     days = max(1, min(365, int(days or 30)))
+    scope = "all" if str(scope or "").lower() == "all" else "mine"
     to = datetime.now() + timedelta(days=1)
     frm = datetime.now() - timedelta(days=days)
     try:
         deals = mt5.history_deals_get(frm, to) or []
     except Exception as exc:
         raise HTTPException(500, f"读取历史失败: {exc}")
-    grouped = group_history_deals(deals, magic=client.magic)
+    grouped = group_history_deals(deals, magic=None if scope == "all" else client.magic)
     server_offset = client.server_time_offset()
     return {
         "server_offset_sec": server_offset,
@@ -845,6 +849,7 @@ def api_mt5_history(days: int = 30):
         "closed": grouped["closed"],
         "open": grouped["open"],
         "days": days,
+        "scope": scope,
     }
 
 
@@ -962,6 +967,7 @@ backtest_job = JobManager("回测")
 
 @app.post("/api/training/start")
 def api_training_start(payload: dict):
+    (ROOT / "TRAIN_STOP").unlink(missing_ok=True)  # 清掉残留的停止信号
     direct_mt5 = bool(payload.get("direct_mt5"))
     from_scratch = bool(payload.get("from_scratch"))
     steps = int(payload.get("steps", 0) or 0)
@@ -1087,12 +1093,49 @@ def api_delete_checkpoint(payload: dict):
 
 @app.post("/api/training/stop")
 def api_training_stop():
-    return training_job.stop()
+    """安全停止：写 TRAIN_STOP 信号 → 引擎存完检查点/策略后自己退出；
+    超时未退才强杀兜底。这样「停止训练」不再丢进度。"""
+    stop_flag = ROOT / "TRAIN_STOP"
+    try:
+        stop_flag.write_text("STOP", encoding="utf-8")
+    except OSError as exc:
+        raise HTTPException(500, f"写停止信号失败: {exc}")
+    if not training_job.running():
+        stop_flag.unlink(missing_ok=True)
+        return {"ok": True, "message": "没有在运行的任务"}
+    for _ in range(40):  # 最多等 40 秒安全退出
+        time.sleep(1)
+        if not training_job.running():
+            stop_flag.unlink(missing_ok=True)
+            logger.info("[看板] 训练已安全停止（进度已保存）")
+            return {"ok": True, "message": "已安全停止，进度已保存（检查点/策略/曲线）"}
+    result = training_job.stop()  # 超时兜底强杀
+    stop_flag.unlink(missing_ok=True)
+    return result
 
 
 @app.get("/api/training/status")
 def api_training_status():
-    return training_job.status()
+    st = training_job.status()
+    # 信息面板：把「正在训练什么」解析出来（品种/周期/引擎/本次新增步数/起点）
+    args = training_job.args or {}
+    info = {"symbol": None, "timeframe": None, "engine": "single",
+            "additional_steps": args.get("steps", 0), "from_scratch": args.get("from_scratch", False)}
+    data_file = str(args.get("data_file") or "")
+    if args.get("direct_mt5"):
+        info["symbol"] = str(args.get("symbol") or "") or None
+        info["timeframe"] = args.get("timeframe")
+    elif data_file.endswith(".parquet") and Path(data_file).exists():
+        try:
+            from data_pipeline.parquet_manager import parse_parquet_filename
+            sym, tf = parse_parquet_filename(data_file)
+            info["symbol"], info["timeframe"] = sym, tf
+        except Exception:
+            pass
+    if int(args.get("islands", 0) or 0) > 1:
+        info["engine"] = f"island×{args['islands']}"
+    st["info"] = info
+    return st
 
 
 @app.get("/api/training/curve")
@@ -1120,7 +1163,7 @@ def api_training_curve(symbol: str = ""):
             candidates.append(ROOT / f"training_history_{tag}.json")
             candidates.append(ROOT / f"training_history_{Path(arg_file).stem}.json")
         candidates.extend(sorted(
-            ROOT.glob("training_history_*.json"),
+            (p for p in ROOT.glob("training_history_*.json") if "__isl" not in p.name),
             key=lambda p: p.stat().st_mtime, reverse=True,
         ))
     for path in candidates:

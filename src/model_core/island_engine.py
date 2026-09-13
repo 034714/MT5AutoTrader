@@ -196,8 +196,6 @@ class IslandAlphaEngine:
             end = min(((start // interval) + 1) * interval, total_steps)
             phase_label = f"第{phase_no}阶段"
 
-            active = [(i, isl) for i, isl in enumerate(self.islands)
-                      if not isl.stopped_early]
             for i, isl in enumerate(self.islands):
                 if isl.stopped_early:
                     print(f"\n>>> {phase_label} — Island {i+1}/{self.n_islands} "
@@ -223,6 +221,11 @@ class IslandAlphaEngine:
                 for _, isl in active:
                     _run_phase(isl)
             self._update_global_best()
+
+            if any(getattr(isl, "user_stopped", False) for isl in self.islands):
+                print("\n[岛训练] 收到停止信号，提前结束本轮岛训练"
+                      "（进度保留到最近一次迁移阶段检查点）")
+                return
 
             # 阶段结束：迁移 elite
             self._migrate_elites(end)

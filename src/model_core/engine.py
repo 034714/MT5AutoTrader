@@ -297,6 +297,8 @@ class AlphaEngine:
         self._stag_windows_no_gain = 0
         # 自动停止后供岛模式跳过该岛的后续阶段
         self.stopped_early = False
+        # 看板「停止训练」信号触发的安全停止
+        self.user_stopped = False
 
         # Fix 3: EMA reward baseline
         self._reward_ema: float | None = None
@@ -731,8 +733,19 @@ class AlphaEngine:
         low_entropy_streak = 0
         prev_init_dist     = None  # 用于计算相邻步分布差异 KL
         run_t0             = time.time()  # 本次续训起点，用于日志里显示实际步速
+        # 停止信号文件（看板「停止训练」写入；由训练入口脚本在启动时清理，
+        # 引擎只读不删——岛模式下后跑的岛不能把信号吞掉）
+        stop_file          = _CHECKPOINT_DIR.parent / "TRAIN_STOP"
 
         for step in pbar:
+            if step % 2 == 0 and stop_file.exists():
+                # ── 看板「停止训练」：安全保存当前进度后退出 ─────────────
+                tqdm.write("[收到停止信号] 正在保存检查点/策略/曲线后退出…")
+                self.user_stopped = True
+                if self.save_checkpoints:
+                    self.save_checkpoint(step + 1)
+                self._save_training_history_live()
+                break
             # ── Part A: Sample n_new new formulas ────────────────────
             inp_new = torch.zeros((n_new, 1), dtype=torch.long,
                                   device=ModelConfig.DEVICE)
@@ -1082,7 +1095,7 @@ class AlphaEngine:
 
             self._save_training_history_live()
 
-            if self.save_checkpoints and ((step + 1) % 20 == 0 or (step + 1) == end_step):
+            if self.save_checkpoints and ((step + 1) % max(1, int(getattr(ModelConfig, "CHECKPOINT_EVERY", 10))) == 0 or (step + 1) == end_step):
                 ckpt = self.save_checkpoint(step + 1)
                 tqdm.write(f"[检查点] → {ckpt} (最优={self.best_score:.3f})")
                 # 步速指示器：帮你分辨「训练变慢」是代码问题还是机器被拖慢

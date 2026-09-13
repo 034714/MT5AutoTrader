@@ -91,6 +91,37 @@
   .charts img { max-width: 100%; border: 1px solid var(--border); border-radius: 6px; margin: 8px 0; }
   .spin { display: inline-block; animation: spin 1s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
+  /* ═══ 界面美化覆盖层（2026-09-13）：仅覆盖上面同优先级规则 ═══ */
+  body { background: radial-gradient(1200px 500px at 20% -10%, rgba(77,163,255,.08), transparent 60%),
+                    radial-gradient(1000px 400px at 100% 0%, rgba(46,204,113,.05), transparent 55%), var(--bg); }
+  header { background: linear-gradient(180deg, rgba(23,29,38,.98), rgba(19,24,31,.98)); box-shadow: 0 1px 0 rgba(77,163,255,.12); }
+  header h1 { letter-spacing: .5px; }
+  nav { padding-top: 4px; gap: 2px; }
+  nav button { border-radius: 8px 8px 0 0; padding: 9px 18px; font-size: 13.5px; transition: background .15s, color .15s; }
+  nav button:hover { background: rgba(77,163,255,.08); }
+  nav button.active { background: rgba(77,163,255,.10); font-weight: 600; }
+  main { padding: 22px; }
+  .card { border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,.25); transition: border-color .15s; }
+  .card:hover { border-color: rgba(77,163,255,.35); }
+  .card h3 { display: flex; align-items: center; gap: 8px; font-size: 13.5px; letter-spacing: .5px; }
+  .card h3::before { content: ""; width: 3px; height: 14px; border-radius: 2px; background: linear-gradient(180deg, var(--accent), rgba(77,163,255,.35)); }
+  button.btn { border-radius: 7px; font-weight: 600; transition: filter .12s, transform .06s; box-shadow: 0 1px 4px rgba(0,0,0,.3); }
+  button.btn:active { transform: translateY(1px); }
+  button.btn.ghost { box-shadow: none; }
+  button.btn.ghost:hover { border-color: var(--accent); color: var(--accent); }
+  input, select { border-radius: 7px; transition: border-color .12s, box-shadow .12s; }
+  input:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(77,163,255,.18); }
+  th { font-size: 12px; text-transform: uppercase; letter-spacing: .5px; }
+  tbody tr { transition: background .1s; }
+  .progress-wrap { height: 8px; border-radius: 4px; }
+  .progress-bar { background: linear-gradient(90deg, #2ecc71, #4da3ff); }
+  .kv { padding: 5px 0; }
+  .kv:hover .k { color: var(--text); }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: #2a3542; border-radius: 5px; border: 2px solid var(--bg); }
+  ::-webkit-scrollbar-thumb:hover { background: #3a4859; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  .ctx-btn, #sr-ctx-menu button { text-align: left; }
 </style>
 </head>
 <body>
@@ -105,12 +136,12 @@
 
 <nav>
   <button class="active" data-tab="overview">总览</button>
+  <button data-tab="chart">图表分析</button>
   <button data-tab="strategies">策略库</button>
   <button data-tab="training">训练</button>
   <button data-tab="backtest">回测</button>
   <button data-tab="control">交易控制</button>
   <button data-tab="risk">风控参数</button>
-  <button data-tab="manual">手动交易</button>
   <button data-tab="history">历史成交</button>
   <button data-tab="logs">日志</button>
 </nav>
@@ -151,34 +182,59 @@
       <div class="hint" style="margin-top:8px">「平仓」直接向 MT5 发送平仓指令；修改止损/止盈同理。注意：平仓后若绑定策略信号仍在，Runner 可能在下一根收盘 K 线重新开仓——想彻底不交易请先到「策略库」解绑。</div>
       <div id="ov-msg" class="msg"></div>
     </div>
-    <div class="card" style="margin-bottom:14px">
-      <h3>实时 K 线与关键位</h3>
-      <div class="row" style="flex-wrap:wrap">
-        <input type="text" id="sr-chart-symbol" list="mt5-symbol-list" autocomplete="off"
-          style="min-width:140px" placeholder="品种，如 BTCUSD_">
-        <datalist id="mt5-symbol-list"></datalist>
-        <select id="sr-chart-tf">
-          <option value="M5">M5</option><option value="M15">M15</option>
-          <option value="M30">M30</option><option value="H1" selected>H1</option>
-          <option value="H4">H4</option><option value="D1">D1</option>
-        </select>
-        <span id="sr-chart-pos-label" class="hint" style="display:none">操作仓位</span>
-        <select id="sr-chart-pos" style="display:none;min-width:190px"
-          onchange="srChart.posTicket = this.value; drawSRChart();"></select>
-        <button class="btn small" onclick="loadSRChart()">刷新</button>
-        <label class="hint"><input type="checkbox" id="sr-chart-auto" checked> 自动刷新（15 秒）</label>
-      </div>
-      <div id="sr-chart-meta" class="hint" style="margin:4px 0 6px">加载中…</div>
-      <div style="position:relative">
-        <canvas id="sr-chart" height="420" style="width:100%;display:block;background:var(--panel2);border:1px solid var(--border);border-radius:6px;cursor:crosshair"></canvas>
-        <div id="sr-chart-tip" style="position:absolute;display:none;pointer-events:none;background:rgba(10,12,16,.92);border:1px solid var(--border);border-radius:6px;padding:6px 9px;font-size:12px;line-height:1.5;white-space:pre;z-index:5"></div>
-      </div>
-      <div id="sr-chart-legend" class="hint" style="margin-top:6px"></div>
-      <div class="hint" style="margin-top:4px">滚轮缩放 · 拖动平移 · 双击复位 · 鼠标悬停看明细。绿色=支撑带，红色=压力带；蓝线=开仓价，红/绿虚线=止损/止盈（<strong>按住上下拖动，松手后弹确认框才生效</strong>；不在视野内时显示在上下边缘），橙虚线=止盈一半；▲/▼=历史入场（蓝=多、橙=空），圆点=离场（绿=盈利、红=亏损）。手动拖动设置的止损由你全权管理，不会被自动拉回；阶梯保本仍生效。</div>
-    </div>
     <div class="card">
       <h3>最近动作</h3>
       <pre class="log" id="ov-actions" style="max-height:240px">加载中…</pre>
+    </div>
+  </section>
+
+  <!-- ═══ 图表分析（K线 + 手动下单 + 右键下单）═══ -->
+  <section id="tab-chart" class="tab">
+    <div class="grid" style="grid-template-columns: minmax(0,2.2fr) minmax(280px,1fr); gap:14px; align-items:start">
+      <div class="card">
+        <h3>实时 K 线与关键位</h3>
+        <div class="row" style="flex-wrap:wrap">
+          <input type="text" id="sr-chart-symbol" list="mt5-symbol-list" autocomplete="off"
+            style="min-width:140px" placeholder="品种，如 BTCUSD_">
+          <datalist id="mt5-symbol-list"></datalist>
+          <select id="sr-chart-tf">
+            <option value="M5">M5</option><option value="M15">M15</option>
+            <option value="M30">M30</option><option value="H1" selected>H1</option>
+            <option value="H4">H4</option><option value="D1">D1</option>
+          </select>
+          <span id="sr-chart-pos-label" class="hint" style="display:none">操作仓位</span>
+          <select id="sr-chart-pos" style="display:none;min-width:190px"
+            onchange="srChart.posTicket = this.value; drawSRChart();"></select>
+          <button class="btn small" onclick="loadSRChart()">刷新</button>
+          <label class="hint"><input type="checkbox" id="sr-chart-auto" checked> 自动刷新（15 秒）</label>
+        </div>
+        <div id="sr-chart-meta" class="hint" style="margin:4px 0 6px">加载中…</div>
+        <div style="position:relative">
+          <canvas id="sr-chart" height="500" style="width:100%;display:block;background:var(--panel2);border:1px solid var(--border);border-radius:6px;cursor:crosshair"></canvas>
+          <div id="sr-chart-tip" style="position:absolute;display:none;pointer-events:none;background:rgba(10,12,16,.92);border:1px solid var(--border);border-radius:6px;padding:6px 9px;font-size:12px;line-height:1.5;white-space:pre;z-index:5"></div>
+          <div id="sr-ctx-menu" style="position:absolute;display:none;z-index:9;background:rgba(14,17,22,.97);border:1px solid var(--border);border-radius:8px;padding:6px;min-width:210px;box-shadow:0 8px 24px rgba(0,0,0,.5)"></div>
+        </div>
+        <div id="sr-chart-legend" class="hint" style="margin-top:6px"></div>
+        <div class="hint" style="margin-top:4px">滚轮缩放 · 拖动平移 · 双击复位 · 悬停看明细 · <strong>右键点图：按所指价位快速下单</strong>。绿色=支撑带，红色=压力带；蓝线=开仓价，红/绿虚线=止损/止盈（<strong>按住上下拖动，松手后弹确认框才生效</strong>；不在视野内时显示在上下边缘），橙虚线=止盈一半；▲/▼=历史入场（蓝=多、橙=空），圆点=离场（绿=盈利、红=亏损）。手动拖动设置的止损由你全权管理，不会被自动拉回；阶梯保本仍生效。</div>
+      </div>
+      <div class="card">
+        <h3>手动下单</h3>
+        <div class="row"><label>品种</label><input type="text" id="mn-symbol" list="mt5-symbol-list" autocomplete="off" placeholder="ETHUSD_" value="ETHUSD_"></div>
+        <div class="row"><label>手数</label><input type="number" id="mn-lot" value="0.1" step="0.01" min="0.01"></div>
+        <div class="row">
+          <button class="btn ghost" onclick="checkOrder('BUY')">检查买单</button>
+          <button class="btn ghost" onclick="checkOrder('SELL')">检查卖单</button>
+        </div>
+        <div class="row">
+          <button class="btn green" onclick="manualOrder('BUY')">市价买入</button>
+          <button class="btn danger" onclick="manualOrder('SELL')">市价卖出</button>
+          <button class="btn ghost" onclick="manualOrder('CLOSE_ALL')">全部平仓</button>
+        </div>
+        <div id="mn-msg" class="msg"></div>
+        <div class="hint">“检查买单/卖单”只调用 MT5 order_check，不会成交；市价按钮会在确认后真实发单。右键点K线可按所指价位快速下单（手数用上面的设置）。</div>
+        <h3 style="margin-top:14px">当前持仓（实时）</h3>
+        <div id="ch-positions" class="hint">加载中…</div>
+      </div>
     </div>
   </section>
 
@@ -276,7 +332,8 @@
         <h3>训练状态</h3>
         <div id="tr-progress" class="status-line"><span>未运行</span><span>—</span></div>
         <div class="progress-wrap"><div id="tr-progress-bar" class="progress-bar"></div></div>
-        <div id="tr-status" class="hint">选择数据后开始训练。训练进程独立运行，关闭页面不会中断。</div>
+        <div id="tr-info" style="margin-top:8px"><div class="hint">尚未开始训练。</div></div>
+        <div id="tr-status" class="hint" style="margin-top:6px">选择数据后开始训练。训练进程独立运行，关闭页面不会中断；「停止训练」会安全保存进度后退出。</div>
         <h3 style="margin-top:14px">训练分数曲线（best_score）</h3>
         <canvas id="tr-chart" width="600" height="180" style="width:100%;height:180px;background:var(--panel2);border:1px solid var(--border);border-radius:6px"></canvas>
         <div id="tr-chart-meta" class="hint" style="margin-top:4px">暂无训练历史</div>
@@ -421,50 +478,47 @@
     </div>
   </section>
 
-  <!-- ═══ 手动交易 ═══ -->
-  <section id="tab-manual" class="tab">
-    <div class="card" style="max-width:560px">
-      <h3>手动下单</h3>
-      <div class="row"><label>品种</label><input type="text" id="mn-symbol" list="mt5-symbol-list" autocomplete="off" placeholder="ETHUSD_" value="ETHUSD_"></div>
-      <div class="row"><label>手数</label><input type="number" id="mn-lot" value="0.1" step="0.01" min="0.01"></div>
-      <div class="row">
-        <button class="btn ghost" onclick="checkOrder('BUY')">检查买单</button>
-        <button class="btn ghost" onclick="checkOrder('SELL')">检查卖单</button>
-      </div>
-      <div class="row">
-        <button class="btn green" onclick="manualOrder('BUY')">市价买入</button>
-        <button class="btn danger" onclick="manualOrder('SELL')">市价卖出</button>
-        <button class="btn ghost" onclick="manualOrder('CLOSE_ALL')">全部平仓</button>
-      </div>
-      <div id="mn-msg" class="msg"></div>
-      <div class="hint">“检查买单/卖单”只调用 MT5 order_check，不会成交；市价按钮会在确认后真实发单。</div>
-    </div>
-  </section>
-
   <!-- ═══ 历史成交 ═══ -->
   <section id="tab-history" class="tab">
+    <div class="grid cols2" style="margin-bottom:14px">
+      <div class="card">
+        <h3>复盘统计</h3>
+        <div class="row"><label>范围</label>
+          <select id="hs-days">
+            <option value="1">最近 1 天</option>
+            <option value="7" selected>最近 7 天</option>
+            <option value="30">最近 30 天</option>
+            <option value="90">最近 90 天</option>
+          </select>
+          <label>成交来源</label>
+          <select id="hs-scope">
+            <option value="mine" selected>本软件的成交</option>
+            <option value="all">账户全部成交（含手动/其它软件）</option>
+          </select>
+          <button class="btn small" onclick="loadHistory()">刷新</button>
+        </div>
+        <div id="hs-stats" style="margin-top:8px"><div class="hint">加载中…</div></div>
+        <div style="margin-top:10px">
+          <canvas id="hs-pnl" height="200" style="width:100%;height:200px;background:var(--panel2);border:1px solid var(--border);border-radius:6px"></canvas>
+          <div class="hint" style="margin-top:4px">累计净盈亏（按平仓时间累加，含手续费与库存费）——回撤一眼可见。</div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>分品种小结</h3>
+        <div id="hs-sym"><div class="hint">加载中…</div></div>
+        <div class="hint" style="margin-top:8px">账户净值走势</div>
+        <canvas id="eq-chart" height="180" style="width:100%;height:180px;background:var(--panel2);border:1px solid var(--border);border-radius:6px"></canvas>
+        <div id="eq-chart-meta" class="hint" style="margin-top:4px">页面开着就会持续积累数据（看板重启后从零开始）。</div>
+      </div>
+    </div>
     <div class="card" style="margin-bottom:14px">
       <h3>已平仓交易</h3>
-      <div class="row"><label>范围</label>
-        <select id="hs-days">
-          <option value="1">最近 1 天</option>
-          <option value="7" selected>最近 7 天</option>
-          <option value="30">最近 30 天</option>
-          <option value="90">最近 90 天</option>
-        </select>
-        <button class="btn small" onclick="loadHistory()">刷新</button>
-        <span id="hs-meta" class="hint"></span></div>
       <div id="hs-closed"><div class="hint">加载中…</div></div>
     </div>
     <div class="card">
       <h3>持仓中的建仓记录（尚无平仓成交）</h3>
       <div id="hs-open"><div class="hint">加载中…</div></div>
       <div class="hint" style="margin-top:8px">数据直接来自 MT5 成交流水（history_deals），含手续费与库存费，按仓位号归并；时间为本地时间（已按服务器时区换算）。</div>
-    </div>
-    <div class="card" style="margin-top:14px">
-      <h3>账户净值走势</h3>
-      <canvas id="eq-chart" width="600" height="260" style="width:100%;height:260px;background:var(--panel2);border:1px solid var(--border);border-radius:6px"></canvas>
-      <div id="eq-chart-meta" class="hint" style="margin-top:4px">页面开着就会持续积累数据（看板重启后从零开始）。</div>
     </div>
   </section>
 
@@ -579,6 +633,16 @@ function drawLineChart(canvas, points, opts) {
     const v = lo + (hi - lo) * i / 3, y = py(v);
     ctx.beginPath(); ctx.moveTo(44, y); ctx.lineTo(w - 8, y); ctx.stroke();
     ctx.fillText(fmt(v), 4, y + 3);
+  }
+  // X 轴刻度（可选）：opts.xFmt(t) 返回横轴文案，画 4 个均匀刻度
+  if (opts && opts.xFmt) {
+    ctx.textAlign = "center";
+    for (let i = 0; i <= 4; i++) {
+      const t = x0 + (x1 - x0) * i / 4;
+      const X = Math.max(60, Math.min(w - 30, px(t)));
+      ctx.fillText(opts.xFmt(t), X, h - 6);
+    }
+    ctx.textAlign = "left";
   }
   // 面积 + 折线
   const fill = (opts && opts.fill) || "rgba(46,204,113,0.10)";
@@ -749,6 +813,15 @@ async function refreshStatus() {
           "</td><td>" + (p.dry_run ? "dry-run 模拟" : "MT5 实仓") + "</td><td>" + actions + "</td></tr>";
       }).join("")
     : "<tr><td colspan='11' class='hint'>暂无持仓</td></tr>";
+  // 图表分析页的紧凑持仓速览
+  const chBox = $("ch-positions");
+  if (chBox) chBox.innerHTML = posList.length
+    ? posList.map(p => "<div class='kv'><span class='k'>" + esc(p.symbol) + " " +
+        (p.direction === "BUY" ? "<span class='long'>多</span>" : "<span class='short'>空</span>") + " " +
+        p.volume + "手</span><span>" + profitCls2Txt(p.profit) + " " +
+        "<button class='btn small danger' onclick=\"closePosition(" + p.ticket + ",'" + esc(p.symbol) + "')\">平仓</button></span></div>").join("")
+    : "<div class='hint'>暂无持仓。</div>";
+  function profitCls2Txt(v) { return v == null ? "—" : "<span class='" + (v > 0 ? "long" : (v < 0 ? "short" : "")) + "'>" + v.toFixed(2) + "</span>"; }
   srChartSyncPosSelector();
   // 动作
   const acts = rs.actions || [];
@@ -932,7 +1005,11 @@ async function loadEquityChart() {
     const hist = (r.history || []).map(p => [p[0] * 1000, p[1]]);
     const pts = (r.points || []).map(p => [p[0] * 1000, p[1]]);
     const all = hist.concat(pts);
-    drawLineChart($("eq-chart"), all, { color: "#2ecc71", fmt: v => v.toFixed(0) });
+    drawLineChart($("eq-chart"), all, {
+      color: "#2ecc71", fmt: v => v.toFixed(0),
+      xFmt: t => { const d = new Date(t); return (d.getMonth() + 1) + "/" + d.getDate() + " " +
+        String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0"); },
+    });
     if (all.length >= 2) {
       const ys = all.map(p => p[1]);
       $("eq-chart-meta").textContent =
@@ -946,7 +1023,8 @@ async function loadTrainCurve() {
   try {
     const r = await api("/api/training/curve");
     const pts = (r.points || []).map(p => [p[0], p[1]]);
-    drawLineChart($("tr-chart"), pts, { color: "#4da3ff", fmt: v => v.toFixed(2) });
+    drawLineChart($("tr-chart"), pts, { color: "#4da3ff", fmt: v => v.toFixed(2),
+      xFmt: t => "第" + Math.round(t) + " 步" });
     $("tr-chart-meta").textContent = pts.length
       ? "品种 " + esc(r.symbol) + "｜已记录 " + pts.length + " 个训练步｜当前最优 " + (r.best != null ? r.best : "—")
       : "暂无训练历史（训练后自动生成 training_history_*.json）";
@@ -971,10 +1049,13 @@ async function stopTraining() {
   catch (e) { showMsg("tr-msg", e.message, false); }
   pollTraining();
 }
+let _trPace = 0;                      // 平滑后的步速（秒/步）
+let _trLast = null;                   // 上次采样 {step, t, started_at}
 async function pollTraining() {
   try {
     const s = await api("/api/training/status");
     const p = s.progress || {};
+    const info = s.info || {};
     let head = s.running ? "训练中（PID 见日志）" : "未运行";
     if (p.step != null) head += " — 步数 " + p.step + "/" + (p.total || "?");
     if (p.best != null) head += "，当前最优 " + p.best;
@@ -982,8 +1063,39 @@ async function pollTraining() {
     $("tr-progress").innerHTML = "<span>" + esc(head) + "</span><span>" + (p.step != null && p.total ? Math.min(100, Math.round(p.step / p.total * 100)) + "%" : "—") + "</span>";
     const pct = p.step != null && p.total ? Math.min(100, Math.max(0, p.step / p.total * 100)) : (s.running ? 3 : 0);
     $("tr-progress-bar").style.width = pct + "%";
-    $("tr-status").textContent = s.running ? "训练进程正在后台运行；可以切换标签页，训练不会中断。" : (s.exit_code === 0 ? "训练已完成。请到「策略库」检查并手动绑定策略。" : "尚未开始训练，或上一次训练已结束。请查看日志了解详情。");
+    $("tr-status").textContent = s.running ? "训练进程正在后台运行；可以切换标签页，训练不会中断。「停止训练」会安全保存进度后退出。" : (s.exit_code === 0 ? "训练已完成。请到「策略库」检查并手动绑定策略。" : "尚未开始训练，或上一次训练已结束。请查看日志了解详情。");
     $("tr-log").textContent = s.log_tail || "暂无日志";
+    // ── 信息面板：正在训练什么 / 跑到哪 / 多快 ─────────────────────
+    if (s.running) {
+      const nowS = Date.now() / 1000;
+      const started = s.started_at ? new Date(s.started_at.replace("-", "/").replace("-", "/")).getTime() / 1000 : nowS;
+      if (!_trLast || _trLast.started_at !== s.started_at) { _trLast = { step: p.step, t: nowS, started_at: s.started_at }; _trPace = 0; }
+      else if (p.step != null && _trLast.step != null && p.step > _trLast.step) {
+        const inst = (nowS - _trLast.t) / (p.step - _trLast.step);
+        if (_trPace) _trPace = _trPace * 0.5 + inst * 0.5; else _trPace = inst;
+        _trLast = { step: p.step, t: nowS, started_at: s.started_at };
+      }
+      const runMin = Math.max(0, (nowS - started) / 60);
+      const kv = (k, v) => "<div class='kv'><span class='k'>" + k + "</span><span>" + v + "</span></div>";
+      let html = "";
+      html += kv("品种 / 周期", info.symbol ? esc(info.symbol) + " · " + esc(info.timeframe || "?") : "—");
+      html += kv("训练引擎", esc(info.engine === "single" ? "单引擎" : info.engine || "—"));
+      html += kv("本次新增步数", info.additional_steps > 0 ? info.additional_steps : "自动补到总步数");
+      html += kv("起跑方式", info.from_scratch ? "从头训练（新随机种子）" : "续训（检查点）");
+      if (p.step != null && p.total) html += kv("进度", p.step + " / " + p.total + " 步");
+      if (p.best != null) html += kv("当前最优", p.best);
+      if (_trPace) {
+        html += kv("步速", _trPace.toFixed(1) + " 秒/步" +
+          (_trPace > 40 ? " <span style='color:var(--orange)'>（偏慢：机器可能降频/被抢占）</span>" : ""));
+        if (p.total && p.step != null && p.total > p.step)
+          html += kv("预计剩余", Math.round((p.total - p.step) * _trPace / 60) + " 分钟");
+      }
+      html += kv("已运行", runMin >= 60 ? (runMin / 60).toFixed(1) + " 小时" : Math.round(runMin) + " 分钟");
+      $("tr-info").innerHTML = html;
+    } else {
+      $("tr-info").innerHTML = "<div class='hint'>未运行。</div>";
+      _trLast = null;
+    }
     loadTrainCurve();
   } catch (e) { /* 忽略 */ }
 }
@@ -1601,6 +1713,31 @@ function srChartPriceAt(y) {
   const p = L.hi - (y - L.padT) / L.plotH * (L.hi - L.lo);
   return Math.max(L.lo, Math.min(L.hi, p));
 }
+// ── 图表右键下单：按光标所指价位快速市价单 ─────────────────────────
+function hideSrCtxMenu() { const m = $("sr-ctx-menu"); if (m) m.style.display = "none"; }
+function srCtxMenu(evt) {
+  const cv = $("sr-chart");
+  const rect = cv.getBoundingClientRect();
+  const price = srChartPriceAt(evt.clientY - rect.top);
+  const sym = $("sr-chart-symbol").value.trim();
+  if (sym) $("mn-symbol").value = sym;   // 右键的品种同步到下单面板
+  const lot = parseFloat($("mn-lot").value) || 0.1;
+  const dec = srChartDec(price || 1);
+  const menu = $("sr-ctx-menu");
+  menu.innerHTML =
+    "<div class='hint' style='padding:2px 6px 6px;border-bottom:1px solid var(--border);margin-bottom:4px'>" +
+      esc(sym) + " @ <b>" + (price != null ? price.toFixed(dec) : "—") + "</b> · " + lot + " 手</div>" +
+    "<button class='btn small green' style='display:block;width:100%;margin:3px 0' onclick=\"hideSrCtxMenu(); manualOrder('BUY')\">▲ 市价买入</button>" +
+    "<button class='btn small danger' style='display:block;width:100%;margin:3px 0' onclick=\"hideSrCtxMenu(); manualOrder('SELL')\">▼ 市价卖出</button>" +
+    "<button class='btn small ghost' style='display:block;width:100%;margin:3px 0' onclick=\"hideSrCtxMenu(); manualOrder('CLOSE_ALL')\">全部平仓</button>" +
+    "<button class='btn small ghost' style='display:block;width:100%;margin:3px 0 0' onclick=\"hideSrCtxMenu()\">取消</button>";
+  menu.style.display = "block";
+  const cvr = cv.getBoundingClientRect();
+  const x = Math.min(evt.clientX - cvr.left + 10, cvr.width - menu.offsetWidth - 8);
+  const y = Math.min(evt.clientY - cvr.top + 8, cvr.height - menu.offsetHeight - 8);
+  menu.style.left = Math.max(4, x) + "px";
+  menu.style.top = Math.max(4, y) + "px";
+}
 async function srChartCommitLine(which, price) {
   const pos = srChartPosition();
   if (!pos) return;
@@ -1726,6 +1863,14 @@ function bindSRChartEvents() {
     srChart.barsVis = 120; srChart.viewEnd = null;
     drawSRChart();
   });
+  cv.addEventListener("contextmenu", e => {
+    e.preventDefault();
+    srCtxMenu(e);
+  });
+  document.addEventListener("click", e => {
+    const m = $("sr-ctx-menu");
+    if (m && m.style.display === "block" && !m.contains(e.target)) hideSrCtxMenu();
+  });
   window.addEventListener("resize", () => drawSRChart());
 }
 bindSRChartEvents();
@@ -1794,12 +1939,13 @@ function editTarget(ticket, symbol, curTp, curPrice, direction) {
 // ── 历史成交 ──────────────────────────────────────────────
 async function loadHistory() {
   const days = parseInt($("hs-days").value, 10) || 7;
+  const scope = $("hs-scope").value;
   try {
-    const r = await api("/api/mt5/history?days=" + days);
+    const r = await api("/api/mt5/history?days=" + days + "&scope=" + scope);
     if (r.server_offset_sec != null) window.__srvOff = r.server_offset_sec;
-    $("hs-meta").textContent = "共 " + r.total_deals + " 笔成交记录（近 " + r.days + " 天，仅本软件的仓位）";
     const money = v => v > 0 ? "<span class='long'>+" + v.toFixed(2) + "</span>" : (v < 0 ? "<span class='short'>" + v.toFixed(2) + "</span>" : "0.00");
-    const closedRows = (r.closed || []).map(t =>
+    const closed = (r.closed || []).slice().sort((a, b) => (a.close_time || 0) - (b.close_time || 0));
+    const closedRows = closed.map(t =>
       "<tr><td>" + esc(t.symbol) + "</td><td>" + (t.direction === "BUY" ? "<span class='long'>多</span>" : "<span class='short'>空</span>") +
       "</td><td>" + t.volume + "</td><td>" + t.open_price + "</td><td class='hint'>" + tsToStr(t.open_time) +
       "</td><td>" + (t.close_price != null ? t.close_price : "—") + "</td><td class='hint'>" + tsToStr(t.close_time) +
@@ -1814,6 +1960,42 @@ async function loadHistory() {
     $("hs-open").innerHTML = openRows
       ? "<table><thead><tr><th>品种</th><th>方向</th><th>手数</th><th>开仓价</th><th>开仓时间</th><th>备注</th></tr></thead><tbody>" + openRows + "</tbody></table>"
       : "<div class='hint'>没有持仓中的建仓记录。</div>";
+    // ── 复盘统计 + 累计盈亏曲线 + 分品种小结 ─────────────────────────
+    const kv = (k, v) => "<div class='kv'><span class='k'>" + k + "</span><span>" + v + "</span></div>";
+    if (!closed.length) {
+      $("hs-stats").innerHTML = "<div class='hint'>范围内没有已平仓交易，暂无统计。</div>";
+      $("hs-sym").innerHTML = "<div class='hint'>暂无数据。</div>";
+      return;
+    }
+    const wins = closed.filter(t => t.profit > 0), losses = closed.filter(t => t.profit < 0);
+    const total = closed.reduce((a, t) => a + t.profit, 0);
+    const grossWin = wins.reduce((a, t) => a + t.profit, 0);
+    const grossLoss = Math.abs(losses.reduce((a, t) => a + t.profit, 0));
+    const maxWin = Math.max.apply(null, closed.map(t => t.profit));
+    const maxLoss = Math.min.apply(null, closed.map(t => t.profit));
+    const pf = grossLoss > 0 ? (grossWin / grossLoss).toFixed(2) : "∞";
+    $("hs-stats").innerHTML =
+      kv("已平仓笔数", closed.length + "（盈利 " + wins.length + " / 亏损 " + losses.length + "）") +
+      kv("总净盈亏", money(total)) +
+      kv("胜率", (closed.length ? (wins.length / closed.length * 100).toFixed(1) : "0") + "%") +
+      kv("盈利因子", pf + "（毛利 ÷ 毛损，>1 赚钱）") +
+      kv("最大单笔盈 / 亏", money(maxWin) + " / " + money(maxLoss));
+    let cum = 0;
+    const pnlPts = closed.map(t => { cum += t.profit; return [(t.close_time || 0) * 1000, cum]; });
+    drawLineChart($("hs-pnl"), pnlPts, {
+      color: total >= 0 ? "#2ecc71" : "#e74c3c", fmt: v => v.toFixed(0),
+      xFmt: t => { const d = new Date(t); return (d.getMonth() + 1) + "/" + d.getDate(); },
+    });
+    const bySym = {};
+    closed.forEach(t => {
+      const s = bySym[t.symbol] = bySym[t.symbol] || { n: 0, win: 0, pnl: 0 };
+      s.n++; if (t.profit > 0) s.win++; s.pnl += t.profit;
+    });
+    $("hs-sym").innerHTML = "<table><thead><tr><th>品种</th><th>笔数</th><th>胜率</th><th>净盈亏</th></tr></thead><tbody>" +
+      Object.keys(bySym).sort((a, b) => bySym[b].pnl - bySym[a].pnl).map(sym => {
+        const s = bySym[sym];
+        return "<tr><td>" + esc(sym) + "</td><td>" + s.n + "</td><td>" + (s.win / s.n * 100).toFixed(0) + "%</td><td>" + money(s.pnl) + "</td></tr>";
+      }).join("") + "</tbody></table>";
   } catch (e) {
     $("hs-closed").innerHTML = "<span class='hint' style='color:var(--red)'>加载失败：" + esc(e.message) + "</span>";
     $("hs-open").innerHTML = "";

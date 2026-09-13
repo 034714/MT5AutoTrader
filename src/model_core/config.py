@@ -120,7 +120,9 @@ class ModelConfig:
 
     # ── 检查点自动清理（2026-09-07）────────────────────────────────────
     # 每个品种只保留最近 N 个检查点（每个约 170MB），防止 checkpoints/ 无限膨胀
-    KEEP_CHECKPOINTS:    int   = 3
+    KEEP_CHECKPOINTS:    int   = 2
+    # 每 10 步存一次检查点（配合只保留 2 个：最多损失 10 步进度，占用恒定）
+    CHECKPOINT_EVERY:    int   = 10
 
     # ── 重启多样性（Fix 2: best_snapshot 吸引子效应）─────────────────────
     # 每 FULL_RESET_EVERY 次重启中，做 1 次完全随机初始化而非从 best_snapshot 恢复。

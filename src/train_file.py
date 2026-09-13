@@ -63,6 +63,13 @@ def train_from_file(
     data_file: str, *, from_scratch: bool = False, additional_steps: int = 0,
     resume_file: str | None = None, seed: int | None = None,
 ) -> AlphaEngine | None:
+    # 清掉旧的「停止训练」信号（引擎只读不删，避免岛模式后跑的岛吞掉信号）
+    stop_flag = pathlib.Path("TRAIN_STOP")
+    try:
+        stop_flag.unlink(missing_ok=True)
+    except OSError:
+        pass
+
     info = inspect_parquet_file(data_file)
     symbol = info["symbol"]
     timeframe = info["timeframe"]
