@@ -34,6 +34,7 @@
 - Stop the runner with `STOP_SIGNAL`; use PowerShell `Stop-Process` only as a verified PID fallback. Do not use `wmic` or `os.kill(pid, 0)`.
 - Do not verify batch files by running them through Git Bash `cmd.exe /c`. MSYS path conversion turns `/c` into a path and opens an interactive shell. Use `powershell.exe -NoProfile -Command "cmd.exe /c '<abs path>'"`.
 - Page-wide "Failed to fetch" (every widget failing at once, e.g. 查看续训点 + 策略库) means a dead dashboard, NOT a broken endpoint: check `netstat -ano | findstr :8900` first. The user may simply have closed the dashboard window — that is normal operation, not a bug. Restart via WMI so the process escapes the agent's shell tree — `Invoke-CimMethod Win32_Process Create -Arguments @{CommandLine='cmd.exe /c start.bat'; CurrentDirectory=<project root>}` — then confirm 8900 LISTENING + `/api/status` 200. Launching start.bat directly inside an agent command (foreground or background) leaves the dashboard inside that task's process/handle tree, which can take it down when the task ends.
+- **Cleanup rule (user request 2026-09-13): when the agent's work is done, the agent stops the processes IT started** (dashboard, training, backtest) via `stop.bat`/`scripts/stop_all.ps1` — unless the user asked to keep them running. Never stop instances the user started themselves, and NEVER auto-start the runner when `dry_run=false` (user does that from 交易控制).
 
 ## Logging rules
 
