@@ -122,9 +122,70 @@
   ::-webkit-scrollbar-thumb:hover { background: #3a4859; }
   ::-webkit-scrollbar-track { background: transparent; }
   .ctx-btn, #sr-ctx-menu button { text-align: left; }
+  /* ═══ 外观设置（2026-09-13）：背景图片 / 玻璃质感 / 工具条位置 ═══ */
+  #bg-dim-layer { position: fixed; inset: 0; background: #000; opacity: 0; pointer-events: none; z-index: 0; }
+  header, #shell { position: relative; z-index: 1; }
+  #shell { display: block; }
+  #nav-min { display: none; }
+  /* 左侧工具条：通天整条（fixed 全高），底部可收起成窄条 */
+  html.ui-nav-left nav {
+    position: fixed; left: 0; top: var(--hdr-h, 57px); bottom: 0; width: 150px; z-index: 2;
+    flex-direction: column; flex-wrap: nowrap; gap: 3px; padding: 12px 8px;
+    border-bottom: none; border-right: 1px solid var(--border);
+    overflow-y: auto; overflow-x: hidden;
+  }
+  html.ui-nav-left nav button { text-align: left; width: 100%; flex: 0 0 auto; border-bottom: none; border-radius: 0 18px 18px 0; padding: 10px 14px; }
+  html.ui-nav-left nav button.active { border-bottom: none; }
+  html.ui-nav-left #nav-min { display: block; margin-top: auto; border-top: 1px solid var(--border); padding-top: 10px; }
+  html.ui-nav-left main { margin-left: 166px; max-width: none; }
+  html.ui-nav-left.ui-nav-min nav { width: 46px; padding: 12px 4px; }
+  html.ui-nav-left.ui-nav-min main { margin-left: 62px; }
+  html.ui-nav-left.ui-nav-min nav button { font-size: 0; text-align: center; padding: 10px 0; border-radius: 8px; }
+  html.ui-nav-left.ui-nav-min nav button::after { content: attr(data-short); font-size: 13px; }
+  @media (max-width: 900px) {
+    html.ui-nav-left nav { position: static; width: auto; flex-direction: row; flex-wrap: wrap; border-right: none; border-bottom: 1px solid var(--border); }
+    html.ui-nav-left nav button { width: auto; border-radius: 8px 8px 0 0; }
+    html.ui-nav-left main { margin-left: 0; }
+    html.ui-nav-left #nav-min { display: none; }
+  }
+  html { --ui-blur: 14px; }
+  html.ui-glass header, html.ui-glass nav, html.ui-glass .card, html.ui-glass #overlay .box {
+    background: rgba(21,27,35,.66);
+    backdrop-filter: blur(var(--ui-blur)) saturate(1.35);
+    -webkit-backdrop-filter: blur(var(--ui-blur)) saturate(1.35);
+    transform: translateZ(0);   /* 提升为独立合成层：修悬停时毛玻璃闪黑线 */
+  }
+  html.ui-glass .card, html.ui-glass tbody tr { transition: none; }
+  html.ui-glass pre.log { background: rgba(7,10,14,.6); }
+  html.ui-glass input, html.ui-glass select, html.ui-glass .stat { background: rgba(34,43,54,.72); }
+  .stat-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+  .stat { flex: 1 1 150px; background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+  .stat .v { font-size: 17px; font-weight: 700; }
+  .stat .k { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  #eq-legend .ldot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin: 0 4px 0 10px; vertical-align: middle; }
 </style>
+<script>
+/* 外观偏好尽早应用，避免刷新时先闪一下默认样式 */
+(function () {
+  try {
+    var p = JSON.parse(localStorage.getItem("mt5.ui") || "{}");
+    var el = document.documentElement;
+    if (p.nav === "left") el.classList.add("ui-nav-left");
+    if (p.navMin) el.classList.add("ui-nav-min");
+    if (p.glass) el.classList.add("ui-glass");
+    if (p.blur != null) el.style.setProperty("--ui-blur", p.blur + "px");
+    if (p.bg) {
+      var s = document.createElement("style");
+      s.id = "ui-bg-style";
+      s.textContent = 'body{background:#0b0e13 url("' + p.bg + '") center/cover no-repeat fixed}';
+      document.head.appendChild(s);
+    }
+  } catch (e) { /* 忽略 */ }
+})();
+</script>
 </head>
 <body>
+<div id="bg-dim-layer"></div>
 <header>
   <h1>MT5<span>AutoTrader</span></h1>
   <span id="hdr-runner" class="pill gray">运行状态加载中</span>
@@ -134,16 +195,19 @@
   <span id="clock"></span>
 </header>
 
+<div id="shell">
 <nav>
-  <button class="active" data-tab="overview">总览</button>
-  <button data-tab="chart">图表分析</button>
-  <button data-tab="strategies">策略库</button>
-  <button data-tab="training">训练</button>
-  <button data-tab="backtest">回测</button>
-  <button data-tab="control">交易控制</button>
-  <button data-tab="risk">风控参数</button>
-  <button data-tab="history">历史成交</button>
-  <button data-tab="logs">日志</button>
+  <button class="active" data-tab="overview" data-short="总">总览</button>
+  <button data-tab="chart" data-short="图">图表分析</button>
+  <button data-tab="strategies" data-short="策">策略库</button>
+  <button data-tab="training" data-short="训">训练</button>
+  <button data-tab="backtest" data-short="回">回测</button>
+  <button data-tab="control" data-short="交">交易控制</button>
+  <button data-tab="risk" data-short="风">风控参数</button>
+  <button data-tab="history" data-short="历">历史成交</button>
+  <button data-tab="logs" data-short="日">日志</button>
+  <button data-tab="appearance" data-short="外">外观</button>
+  <button id="nav-min" data-short="»" onclick="toggleNavMin()" title="收起/展开侧栏">« 收起侧栏</button>
 </nav>
 
 <main>
@@ -153,8 +217,6 @@
       <div class="card">
         <h3>MT5 账户</h3>
         <div id="ov-account"><div class="hint">加载中…</div></div>
-        <canvas id="eq-spark" height="54" style="width:100%;height:54px;background:var(--panel2);border:1px solid var(--border);border-radius:6px;margin-top:8px"></canvas>
-        <div class="hint" style="margin-top:3px">净值走势（迷你）</div>
       </div>
       <div class="card">
         <h3>Runner</h3>
@@ -480,34 +542,29 @@
 
   <!-- ═══ 历史成交 ═══ -->
   <section id="tab-history" class="tab">
-    <div class="grid cols2" style="margin-bottom:14px">
-      <div class="card">
-        <h3>复盘统计</h3>
-        <div class="row"><label>范围</label>
-          <select id="hs-days" onchange="loadHistory()">
-            <option value="1">最近 1 天</option>
-            <option value="7" selected>最近 7 天</option>
-            <option value="30">最近 30 天</option>
-            <option value="90">最近 90 天</option>
-          </select>
-          <label>成交来源</label>
-          <select id="hs-scope" onchange="loadHistory()">
-            <option value="mine" selected>本软件的成交</option>
-            <option value="all">账户全部成交（含手动/其它软件）</option>
-          </select>
-          <button class="btn small" onclick="loadHistory()">刷新</button>
-        </div>
-        <div id="hs-stats" style="margin-top:8px"><div class="hint">加载中…</div></div>
-        <div style="margin-top:10px">
-          <canvas id="hs-pnl" height="200" style="width:100%;height:200px;background:var(--panel2);border:1px solid var(--border);border-radius:6px"></canvas>
-          <div class="hint" style="margin-top:4px">累计净盈亏（按平仓时间累加，含手续费与库存费）——回撤一眼可见。</div>
-        </div>
+    <div class="card" style="margin-bottom:14px">
+      <h3>复盘统计</h3>
+      <div class="row"><label>范围</label>
+        <select id="hs-days" onchange="loadHistory()">
+          <option value="1">最近 1 天</option>
+          <option value="7" selected>最近 7 天</option>
+          <option value="30">最近 30 天</option>
+          <option value="90">最近 90 天</option>
+        </select>
+        <label>成交来源</label>
+        <select id="hs-scope" onchange="loadHistory()">
+          <option value="mine" selected>本软件的成交</option>
+          <option value="all">账户全部成交（含手动/其它软件）</option>
+        </select>
+        <button class="btn small" onclick="loadHistory()">刷新</button>
       </div>
-      <div class="card">
-        <h3>账户净值走势</h3>
-        <canvas id="eq-chart" height="220" style="width:100%;height:220px;background:var(--panel2);border:1px solid var(--border);border-radius:6px"></canvas>
-        <div id="eq-chart-meta" class="hint" style="margin-top:6px">历史余额由成交流水推算；在线采样页面开着持续积累。</div>
-      </div>
+      <div id="hs-stats" class="stat-row" style="margin-top:8px"><div class="hint">加载中…</div></div>
+    </div>
+    <div class="card" style="margin-bottom:14px">
+      <h3>账户净值走势</h3>
+      <canvas id="eq-chart" height="280" style="width:100%;height:280px;background:var(--panel2);border:1px solid var(--border);border-radius:6px"></canvas>
+      <div id="eq-legend" class="hint" style="margin-top:6px"></div>
+      <div id="eq-chart-meta" class="hint" style="margin-top:2px">历史余额由成交流水推算；在线采样页面开着持续积累。</div>
     </div>
     <div class="card" style="margin-bottom:14px">
       <h3>已平仓交易</h3>
@@ -540,7 +597,42 @@
       <div class="hint" style="margin-top:6px">Runner 日志 = 信号/风控/下单动作；看板日志 = 服务与手动操作记录。清空只影响显示文件，新日志会从头继续写，不影响运行；导出的是完整日志文件。</div>
     </div>
   </section>
+  <!-- ═══ 外观 ═══ -->
+  <section id="tab-appearance" class="tab">
+    <div class="grid cols2">
+      <div class="card">
+        <h3>背景图片</h3>
+        <div class="row">
+          <button class="btn small ghost" onclick="$('bg-file').click()">上传背景图片…</button>
+          <button class="btn small ghost" onclick="clearBg()">恢复默认背景</button>
+          <input type="file" id="bg-file" accept="image/*" style="display:none">
+        </div>
+        <div class="row"><label>背景变暗</label>
+          <input type="range" id="bg-dim" min="0" max="85" step="5" style="width:180px;min-width:0">
+          <span id="bg-dim-val" class="hint">0%</span></div>
+        <div class="hint">图片只保存在本浏览器里（不会上传到服务器），整个界面立即生效。「背景变暗」需先上传背景图片才生效，背景偏亮时调大些文字更好认。</div>
+        <div id="ap-bg-msg" class="msg"></div>
+      </div>
+      <div class="card">
+        <h3>质感与布局</h3>
+        <div class="row"><label>工具条位置</label>
+          <select id="ui-navpos">
+            <option value="top">上方（横向页签）</option>
+            <option value="left">左侧（竖向菜单）</option>
+          </select></div>
+        <div class="hint" style="margin:0 0 6px">选左侧时侧栏是通天整条，底部有「收起侧栏」按钮可缩成窄条（只显示每个页签的首字）。</div>
+        <div class="row"><label>玻璃质感</label>
+          <label class="hint" style="min-width:0"><input type="checkbox" id="ui-glass"> 顶栏和卡片变成半透明毛玻璃（配背景图片更好看）</label></div>
+        <div class="row"><label>毛玻璃模糊</label>
+          <input type="range" id="ui-blur" min="0" max="30" step="2" style="width:180px;min-width:0">
+          <span id="ui-blur-val" class="hint">14px</span></div>
+        <div class="hint">模糊强度只在勾选「玻璃质感」后生效；调到 0 就是只透明不模糊。</div>
+        <div class="hint">以上设置会自动保存，只对这台电脑的这个浏览器生效，换浏览器或换电脑需要重新设置。</div>
+      </div>
+    </div>
+  </section>
 </main>
+</div>
 
 <div id="overlay">
   <div class="box">
@@ -598,8 +690,15 @@ function fileName(p) {
   return String(p == null ? "" : p).replace(/\\/g, "/").split("/").pop();
 }
 
-// ── 折线图（原生 canvas，无外部库）────────────────────────
+// ── 折线图（原生 canvas，无外部库；支持多条线）──────────────────
+function hexA(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return "rgba(" + (n >> 16) + "," + ((n >> 8) & 255) + "," + (n & 255) + "," + a + ")";
+}
 function drawLineChart(canvas, points, opts) {
+  drawSeriesChart(canvas, [{ points, color: (opts && opts.color) || "#2ecc71" }], opts);
+}
+function drawSeriesChart(canvas, series, opts) {
   if (!canvas) return;
   const ctx = canvas.getContext("2d");
   const dpr = window.devicePixelRatio || 1;
@@ -610,54 +709,83 @@ function drawLineChart(canvas, points, opts) {
   if (canvas.width !== pw || canvas.height !== ph) { canvas.width = pw; canvas.height = ph; }
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
-  const color = (opts && opts.color) || "#2ecc71";
   const fmt = (opts && opts.fmt) || (v => String(v));
-  if (!points || points.length < 2) {
+  series = (series || []).filter(s => s.points && s.points.length >= 2)
+    .map(s => Object.assign({}, s, { points: s.points.slice().sort((a, b) => a[0] - b[0]) }));
+  if (!series.length) {
     ctx.fillStyle = "#8a98a8";
     ctx.font = "12px 'Microsoft YaHei'";
     ctx.fillText("数据积累中（至少需要两个采样点）", 12, h / 2);
+    if (opts && opts.legendEl) $(opts.legendEl).innerHTML = "";
     return;
   }
-  const xs = points.map(p => p[0]), ys = points.map(p => p[1]);
+  const allPts = series.reduce((acc, s) => acc.concat(s.points), []);
+  const ys = allPts.map(p => p[1]);
   let lo = Math.min.apply(null, ys), hi = Math.max.apply(null, ys);
   if (hi - lo < 1e-9) { hi += 1; lo -= 1; }
   const pad = (hi - lo) * 0.12; lo -= pad; hi += pad;
-  const x0 = xs[0], x1 = xs[xs.length - 1];
-  const bare = opts && opts.bare;
-  const padL = bare ? 8 : 44, padB = bare ? 8 : 20, padR = bare ? 8 : 14, padT2 = bare ? 8 : 10;
+  const xs = allPts.map(p => p[0]);
+  const x0 = Math.min.apply(null, xs), x1 = Math.max.apply(null, xs);
+  const padL = 48, padB = 24, padR = 16, padT = 12;
   const px = t => padL + (t - x0) / ((x1 - x0) || 1) * (w - padL - padR);
-  const py = v => padT2 + (1 - (v - lo) / (hi - lo)) * (h - padT2 - padB);
+  const py = v => padT + (1 - (v - lo) / (hi - lo)) * (h - padT - padB);
   // 网格与 Y 轴刻度
   ctx.strokeStyle = "#2d3948"; ctx.fillStyle = "#8a98a8";
-  ctx.font = "10px Consolas";
-  if (!bare) for (let i = 0; i <= 3; i++) {
+  ctx.font = "10px Consolas"; ctx.textAlign = "right";
+  for (let i = 0; i <= 3; i++) {
     const v = lo + (hi - lo) * i / 3, y = py(v);
-    ctx.beginPath(); ctx.moveTo(44, y); ctx.lineTo(w - 8, y); ctx.stroke();
-    ctx.fillText(fmt(v), 4, y + 3);
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(w - padR, y); ctx.stroke();
+    ctx.fillText(fmt(v), padL - 6, y + 3);
   }
-  // X 轴刻度（可选）：opts.xFmt(t) 返回横轴文案，画 4 个均匀刻度
-  if (opts && opts.xFmt && !bare) {
-    ctx.textAlign = "center";
-    for (let i = 0; i <= 4; i++) {
-      const t = x0 + (x1 - x0) * i / 4;
-      const X = Math.max(60, Math.min(w - 30, px(t)));
-      ctx.fillText(opts.xFmt(t), X, h - 6);
+  // X 轴刻度：跨度超过 2 天只写「月/日」，放不下时自动跳过中间标签
+  const span = x1 - x0;
+  const xFmt = (opts && opts.xFmt) || (span > 2 * 86400000
+    ? t => { const d = new Date(t); return (d.getMonth() + 1) + "/" + d.getDate(); }
+    : span > 12 * 3600000
+      ? t => { const d = new Date(t); return (d.getMonth() + 1) + "/" + d.getDate() + " " +
+          String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0"); }
+      : t => { const d = new Date(t); return String(d.getHours()).padStart(2, "0") + ":" +
+          String(d.getMinutes()).padStart(2, "0"); });
+  ctx.textAlign = "center";
+  let lastRight = -1e9;
+  for (let i = 0; i <= 4; i++) {
+    const t = x0 + (x1 - x0) * i / 4;
+    const label = xFmt(t);
+    const tw = ctx.measureText(label).width;
+    const X = Math.max(padL + tw / 2, Math.min(w - padR - tw / 2, px(t)));
+    if (X - tw / 2 < lastRight + 8) continue;
+    ctx.fillText(label, X, h - 6);
+    lastRight = X + tw / 2;
+  }
+  // 折线依次画（后面的盖在前面），面积渐变只给勾选的线
+  series.forEach(s => {
+    const color = s.color || "#2ecc71";
+    ctx.beginPath();
+    s.points.forEach((p, i) => { const X = px(p[0]), Y = py(p[1]); i ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y); });
+    ctx.strokeStyle = color; ctx.lineWidth = 1.8; ctx.lineJoin = "round"; ctx.stroke();
+    if (s.fill !== false) {
+      const g = ctx.createLinearGradient(0, padT, 0, h - padB);
+      g.addColorStop(0, hexA(color, 0.16)); g.addColorStop(1, hexA(color, 0.02));
+      ctx.lineTo(px(s.points[s.points.length - 1][0]), h - padB);
+      ctx.lineTo(px(s.points[0][0]), h - padB);
+      ctx.closePath();
+      ctx.fillStyle = g;
+      ctx.fill();
     }
-    ctx.textAlign = "left";
-  }
-  // 面积 + 折线
-  const fill = (opts && opts.fill) || "rgba(46,204,113,0.10)";
-  ctx.beginPath();
-  points.forEach((p, i) => { const X = px(p[0]), Y = py(p[1]); i ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y); });
-  const lastX = px(x1), lastY = py(ys[ys.length - 1]);
-  ctx.strokeStyle = color; ctx.lineWidth = 1.6; ctx.stroke();
-  ctx.lineTo(lastX, h - padB); ctx.lineTo(px(x0), h - padB); ctx.closePath();
-  ctx.fillStyle = fill;
-  ctx.fill();
+  });
+  // 末值小圆点与数值（取最后一条线，避免叠字）
+  const top = series[series.length - 1];
+  const lastP = top.points[top.points.length - 1];
+  const lastX = px(lastP[0]), lastY = py(lastP[1]);
   ctx.beginPath(); ctx.arc(lastX, lastY, 3, 0, Math.PI * 2);
-  ctx.fillStyle = color; ctx.fill();
-  ctx.fillStyle = "#d8e1ea"; ctx.font = "11px Consolas";
-  ctx.fillText(fmt(ys[ys.length - 1]), Math.min(lastX + 6, w - 60), lastY - 6);
+  ctx.fillStyle = top.color; ctx.fill();
+  ctx.fillStyle = "#d8e1ea"; ctx.font = "11px Consolas"; ctx.textAlign = "left";
+  ctx.fillText(fmt(lastP[1]), Math.min(lastX + 6, w - 48), Math.max(padT + 10, lastY - 6));
+  // 图例
+  if (opts && opts.legendEl) {
+    $(opts.legendEl).innerHTML = series.map(s =>
+      "<span class='ldot' style='background:" + (s.color || "#2ecc71") + "'></span>" + esc(s.label || "")).join("");
+  }
 }
 
 // ── 二次确认弹窗 ──────────────────────────────────────────
@@ -705,7 +833,7 @@ $("ov-ok").onclick = () => {
 };
 
 // ── 标签页切换 ────────────────────────────────────────────
-document.querySelectorAll("nav button").forEach(btn => {
+document.querySelectorAll("nav button[data-tab]").forEach(btn => {
   btn.onclick = () => {
     document.querySelectorAll("nav button").forEach(b => b.classList.remove("active"));
     document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
@@ -714,7 +842,7 @@ document.querySelectorAll("nav button").forEach(btn => {
     if (btn.dataset.tab === "strategies") loadStrategies();
     if (btn.dataset.tab === "training") { loadDataFiles(); pollTraining(); }
     if (btn.dataset.tab === "backtest") { loadDataFiles(); loadStrategyDropdowns(); pollBacktest(); loadBacktestReport(); }
-    if (btn.dataset.tab === "history") loadHistory();
+    if (btn.dataset.tab === "history") { loadHistory(); loadEquityChart(); }
     if (btn.dataset.tab === "logs") loadLogView();
   };
 });
@@ -1009,23 +1137,22 @@ async function saveDataDir() {
 async function loadEquityChart() {
   try {
     const r = await api("/api/equity/history");
-    // 历史段：由 MT5 成交流水推算的余额（粗粒度）；在线段：页面开着时的净值采样
-    const hist = (r.history || []).map(p => [p[0] * 1000, p[1]]);
-    const pts = (r.points || []).map(p => [p[0] * 1000, p[1]]);
-    const all = hist.concat(pts);
-    drawLineChart($("eq-chart"), all, {
-      color: "#2ecc71", fmt: v => v.toFixed(0),
-      xFmt: t => { const d = new Date(t); return (d.getMonth() + 1) + "/" + d.getDate() + " " +
-        String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0"); },
-    });
-    const spark = $("eq-spark");
-    if (spark) drawLineChart(spark, all, { color: "#2ecc71", bare: true, fmt: v => v.toFixed(0) });
-    if (all.length >= 2) {
-      const ys = all.map(p => p[1]);
+    // 历史余额：由 MT5 成交流水反推（MT5 不保存历史净值）；在线采样：[时间, 净值, 余额?]
+    const histPts = (r.history || []).map(p => [p[0] * 1000, p[1]]);
+    const online = (r.points || []).map(p => [p[0] * 1000, p[1], p.length > 2 ? p[2] : null]);
+    const lastHistT = histPts.length ? histPts[histPts.length - 1][0] : -1;
+    // 余额线 = 历史段 + 在线采样里的余额列（只取晚于历史段的点，避免折返）
+    const balPts = histPts.concat(online.filter(p => p[2] != null && p[0] > lastHistT).map(p => [p[0], p[2]]));
+    const eqPts = online.map(p => [p[0], p[1]]);
+    const series = [{ points: balPts, color: "#4da3ff", label: "余额（已实现盈亏）", fill: false }];
+    if (eqPts.length >= 2) series.push({ points: eqPts, color: "#2ecc71", label: "净值（含持仓浮动盈亏）" });
+    drawSeriesChart($("eq-chart"), series, { fmt: v => v.toFixed(0), legendEl: "eq-legend" });
+    const ys = balPts.concat(eqPts).map(p => p[1]);
+    if (ys.length >= 2) {
       $("eq-chart-meta").textContent =
-        (hist.length ? "历史余额 " + hist.length + " 点（由成交流水推算）＋ " : "") +
-        "在线采样 " + pts.length + " 点｜期间 " +
-        (Math.min.apply(null, ys)).toFixed(2) + " ~ " + (Math.max.apply(null, ys)).toFixed(2);
+        "MT5 不保存历史净值：过去一段只能按成交流水反推「余额」（蓝线）；页面开着时每分钟采样「净值」（绿线），" +
+        "持仓时含浮动盈亏所以会波动，无持仓时与余额重合｜期间 " +
+        Math.min.apply(null, ys).toFixed(2) + " ~ " + Math.max.apply(null, ys).toFixed(2);
     }
   } catch (e) { /* 忽略 */ }
 }
@@ -1979,11 +2106,9 @@ async function loadHistory() {
     $("hs-open").innerHTML = openRows
       ? "<table><thead><tr><th>品种</th><th>方向</th><th>手数</th><th>开仓价</th><th>开仓时间</th><th>备注</th></tr></thead><tbody>" + openRows + "</tbody></table>"
       : "<div class='hint'>没有持仓中的建仓记录。</div>";
-    // ── 复盘统计 + 累计盈亏曲线 + 分品种小结 ─────────────────────────
-    const kv = (k, v) => "<div class='kv'><span class='k'>" + k + "</span><span>" + v + "</span></div>";
+    // ── 复盘统计（卡片式）────────────────────────────────────────────
     if (!closed.length) {
       $("hs-stats").innerHTML = "<div class='hint'>范围内没有已平仓交易，暂无统计。</div>";
-      $("hs-sym").innerHTML = "<div class='hint'>暂无数据。</div>";
       return;
     }
     const wins = closed.filter(t => t.profit > 0), losses = closed.filter(t => t.profit < 0);
@@ -1993,18 +2118,13 @@ async function loadHistory() {
     const maxWin = Math.max.apply(null, closed.map(t => t.profit));
     const maxLoss = Math.min.apply(null, closed.map(t => t.profit));
     const pf = grossLoss > 0 ? (grossWin / grossLoss).toFixed(2) : "∞";
+    const stat = (k, v) => "<div class='stat'><div class='v'>" + v + "</div><div class='k'>" + k + "</div></div>";
     $("hs-stats").innerHTML =
-      kv("已平仓笔数", closed.length + "（盈利 " + wins.length + " / 亏损 " + losses.length + "）") +
-      kv("总净盈亏", money(total)) +
-      kv("胜率", (closed.length ? (wins.length / closed.length * 100).toFixed(1) : "0") + "%") +
-      kv("盈利因子", pf + "（毛利 ÷ 毛损，>1 赚钱）") +
-      kv("最大单笔盈 / 亏", money(maxWin) + " / " + money(maxLoss));
-    let cum = 0;
-    const pnlPts = closed.map(t => { cum += t.profit; return [(t.close_time || 0) * 1000, cum]; });
-    drawLineChart($("hs-pnl"), pnlPts, {
-      color: total >= 0 ? "#2ecc71" : "#e74c3c", fmt: v => v.toFixed(0),
-      xFmt: t => { const d = new Date(t); return (d.getMonth() + 1) + "/" + d.getDate(); },
-    });
+      stat("已平仓笔数（盈利/亏损）", closed.length + "（" + wins.length + " / " + losses.length + "）") +
+      stat("总净盈亏", money(total)) +
+      stat("胜率", (closed.length ? (wins.length / closed.length * 100).toFixed(1) : "0") + "%") +
+      stat("盈利因子（>1 赚钱）", pf) +
+      stat("最大单笔盈 / 亏", money(maxWin) + " / " + money(maxLoss));
   } catch (e) {
     $("hs-closed").innerHTML = "<span class='hint' style='color:var(--red)'>加载失败：" + esc(e.message) + "</span>";
     $("hs-open").innerHTML = "";
@@ -2050,6 +2170,116 @@ function exportLog() {
   window.open("/api/logs/export?name=" + encodeURIComponent(lgCurrent), "_blank");
 }
 
+// ── 外观设置（背景图片 / 玻璃质感 / 工具条位置）─────────────────
+const UI_KEY = "mt5.ui";
+function uiPrefs() {
+  try { return JSON.parse(localStorage.getItem(UI_KEY) || "{}"); } catch (e) { return {}; }
+}
+function saveUiPrefs(p) {
+  try { localStorage.setItem(UI_KEY, JSON.stringify(p)); return true; }
+  catch (e) { return false; }   // 一般是图片太大超出浏览器本地存储上限
+}
+function applyNavPos(v) { document.documentElement.classList.toggle("ui-nav-left", v === "left"); }
+function applyGlass(on) { document.documentElement.classList.toggle("ui-glass", !!on); }
+function applyBlur(v) {
+  document.documentElement.style.setProperty("--ui-blur", (v == null ? 14 : v) + "px");
+}
+function applyNavMin(on) { document.documentElement.classList.toggle("ui-nav-min", !!on); }
+function toggleNavMin() {
+  const p = uiPrefs();
+  p.navMin = !p.navMin;
+  saveUiPrefs(p);
+  applyNavMin(p.navMin);
+}
+function layoutLeftNav() {
+  // 左侧栏的 top 需要 header 的实际高度（徽标换行时会变）
+  const hdr = document.querySelector("header");
+  if (hdr) document.documentElement.style.setProperty("--hdr-h", hdr.offsetHeight + "px");
+}
+function applyBg(dataUrl, dim) {
+  let st = document.getElementById("ui-bg-style");
+  const dimEl = $("bg-dim-layer");
+  if (!dataUrl) {
+    if (st) st.remove();
+    if (dimEl) dimEl.style.opacity = 0;
+    return;
+  }
+  if (!st) { st = document.createElement("style"); st.id = "ui-bg-style"; document.head.appendChild(st); }
+  st.textContent = 'body{background:#0b0e13 url("' + dataUrl + '") center/cover no-repeat fixed}';
+  if (dimEl) dimEl.style.opacity = (dim == null ? 45 : dim) / 100;
+}
+function fillAppearance() {
+  const p = uiPrefs();
+  $("ui-navpos").value = p.nav === "left" ? "left" : "top";
+  $("ui-glass").checked = !!p.glass;
+  $("ui-blur").value = p.blur != null ? p.blur : 14;
+  $("ui-blur-val").textContent = $("ui-blur").value + "px";
+  $("bg-dim").value = p.dim != null ? p.dim : (p.bg ? 45 : 0);
+  $("bg-dim-val").textContent = $("bg-dim").value + "%";
+}
+function setBgDataUrl(url) {
+  const p = uiPrefs();
+  if (url) { p.bg = url; p.dim = parseInt($("bg-dim").value, 10) || 0; }
+  else { delete p.bg; p.dim = 0; }
+  if (!saveUiPrefs(p)) { showMsg("ap-bg-msg", "图片太大，本浏览器存不下，请换一张小些的图片", false); return; }
+  applyBg(url || null, p.dim);
+  if (url) showMsg("ap-bg-msg", "背景已更换（只保存在本浏览器）", true);
+}
+function clearBg() {
+  setBgDataUrl(null);
+  $("bg-dim").value = 0; $("bg-dim-val").textContent = "0%";
+}
+$("bg-file").addEventListener("change", e => {
+  const f = e.target.files && e.target.files[0];
+  e.target.value = "";
+  if (!f) return;
+  const fr = new FileReader();
+  fr.onload = () => {
+    const img = new Image();
+    img.onload = () => {
+      // 压到屏幕宽度以内再存 JPEG，避免 localStorage 溢出
+      const scale = Math.min(1, Math.max(1280, window.screen.width) / img.width);
+      const cv = document.createElement("canvas");
+      cv.width = Math.round(img.width * scale);
+      cv.height = Math.round(img.height * scale);
+      cv.getContext("2d").drawImage(img, 0, 0, cv.width, cv.height);
+      let url;
+      try { url = cv.toDataURL("image/jpeg", 0.82); }
+      catch (err) { showMsg("ap-bg-msg", "图片处理失败：" + err.message, false); return; }
+      setBgDataUrl(url);
+    };
+    img.onerror = () => showMsg("ap-bg-msg", "图片读取失败", false);
+    img.src = fr.result;
+  };
+  fr.readAsDataURL(f);
+});
+$("bg-dim").addEventListener("input", () => {
+  $("bg-dim-val").textContent = $("bg-dim").value + "%";
+  const p = uiPrefs();
+  p.dim = parseInt($("bg-dim").value, 10);
+  saveUiPrefs(p);
+  if (p.bg) applyBg(p.bg, p.dim);
+});
+$("ui-navpos").addEventListener("change", () => {
+  const p = uiPrefs();
+  p.nav = $("ui-navpos").value;
+  saveUiPrefs(p);
+  applyNavPos(p.nav);
+});
+$("ui-glass").addEventListener("change", () => {
+  const p = uiPrefs();
+  p.glass = $("ui-glass").checked;
+  saveUiPrefs(p);
+  applyGlass(p.glass);
+});
+$("ui-blur").addEventListener("input", () => {
+  $("ui-blur-val").textContent = $("ui-blur").value + "px";
+  const p = uiPrefs();
+  p.blur = parseInt($("ui-blur").value, 10);
+  saveUiPrefs(p);
+  applyBlur(p.blur);
+});
+
 // ── 定时器 ────────────────────────────────────────────────
 setInterval(() => {
   $("clock").textContent = new Date().toLocaleString("zh-CN", { hour12: false });
@@ -2076,6 +2306,17 @@ setInterval(() => {
   } catch (e) { /* 忽略 */ }
   refreshStatus();
   loadEquityChart();
+  // 外观偏好（头部脚本已尽早应用类名/背景，这里补上变暗层并同步设置面板）
+  const p0 = uiPrefs();
+  applyNavPos(p0.nav);
+  applyGlass(p0.glass);
+  applyBlur(p0.blur);
+  applyNavMin(p0.navMin);
+  applyBg(p0.bg, p0.dim);
+  fillAppearance();
+  layoutLeftNav();
+  window.addEventListener("resize", layoutLeftNav);
+  setTimeout(layoutLeftNav, 500);   // 徽标/字体加载后 header 高度可能变化
   try { fillRiskForm(await api("/api/config")); } catch (e) { /* 忽略 */ }
   loadDataFiles();
   loadStrategyDropdowns();

@@ -239,9 +239,9 @@ def api_status():
         client = _get_mt5_client()
         if client is not None:
             server_offset = client.server_time_offset()
-    # 账户净值采样（供总览页折线图）：每次轮询记一个点，内存保留最近 6 小时
+    # 账户净值采样（供历史页折线图）：每次轮询记一个点，内存保留最近 3 天
     if account is not None and account.get("equity") is not None:
-        _push_equity_sample(account["equity"])
+        _push_equity_sample(account["equity"], account.get("balance"))
     return {
         "runner_alive": runner["alive"],
         "runner_status": status,
@@ -312,15 +312,18 @@ def api_logs_export(name: str = "runner"):
 
 # ── 账户净值采样（内存环形缓冲，看板重启后从零开始积累）───────────────
 
-_EQUITY_SAMPLES: list[list[float]] = []   # [unix_ts, equity]
+_EQUITY_SAMPLES: list[list[float]] = []   # [unix_ts, equity] 或 [unix_ts, equity, balance]
 _EQUITY_MAX_POINTS = 4320                 # 3 天 × 每 60 秒一点
 
 
-def _push_equity_sample(equity: float) -> None:
+def _push_equity_sample(equity: float, balance: float | None = None) -> None:
     now = time.time()
     if _EQUITY_SAMPLES and now - _EQUITY_SAMPLES[-1][0] < 55:
         return  # 每分钟记一个点即可（页面图表也是 60 秒读一次）
-    _EQUITY_SAMPLES.append([now, round(float(equity), 2)])
+    row: list[float] = [now, round(float(equity), 2)]
+    if balance is not None:
+        row.append(round(float(balance), 2))   # 余额列：净值图「余额」线在线段的延伸
+    _EQUITY_SAMPLES.append(row)
     if len(_EQUITY_SAMPLES) > _EQUITY_MAX_POINTS:
         del _EQUITY_SAMPLES[: len(_EQUITY_SAMPLES) - _EQUITY_MAX_POINTS]
 
