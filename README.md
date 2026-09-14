@@ -2,9 +2,9 @@
 
 MT5AutoTrader 是一套独立的 MT5 策略训练、回测和自动交易工具。
 
-> **由 AI 编写**：全部代码由 AI（ZCode）在用户的自然语言指导下编写与调试，人类负责提出需求、验收和决策。我们鼓励你也用 AI 来改进和修复它——给任何 AI 助手（Claude / ChatGPT / ZCode / Cursor 等）附上 [AGENTS.md](AGENTS.md)（AI 交接规则文档）和本 README，就能快速上手改代码；欢迎提交 PR，并请注明 AI 参与情况。
+> **由 AI 编写**：全部代码由 AI 在用户的自然语言指导下编写与调试，人类负责提出需求、验收和决策。我们鼓励你也用 AI 来改进和修复它——给任何 AI 助手附上 [AGENTS.md](AGENTS.md)（AI 交接规则文档）和本 README，就能快速上手改代码；欢迎提交 PR，并请注明 AI 参与情况。
 > 
- 交流 QQ 群：133822181    感兴趣的求Star(ฅ⁍̴̀◊⁍̴́)و ̑̑
+ 交流 QQ 群：133822181    感兴趣的求Star  (ฅ⁍̴̀◊⁍̴́)و ̑̑
 
 ## 功能总览
 
@@ -44,7 +44,6 @@ start.bat   （会优先使用 .venv）
 ```
 
 - 仅 Windows 可用（MetaTrader5 包依赖 Windows 的 MT5 终端）
-- MT5 终端需手动打开并登录，本软件不会自动拉起它
 - Python 查找顺序：项目 `.venv` → `runtime\python.exe`（便携包内置）→ `fallback_python.txt` → 系统 PATH
 
 ## 快速上手（网页流程）
@@ -84,8 +83,7 @@ start.bat   （会优先使用 .venv）
   
 ## 打赏与支持
 如果你觉得这个程序对你有帮助的话，可以打赏激励作者继续优化程序，感谢你的支持和鼓励！
-<img width="1279" height="1743" alt="微信图片_20260905190039_1_4" src="https://github.com/user-attachments/assets/aa16aadc-1322-4e62-b884-bbb3ed6f152c" />
-<img width="1350" height="2025" alt="微信图片_20260905190040_2_4" src="https://github.com/user-attachments/assets/8e90a3bc-dc5f-424a-9524-a2121a57349a" />
+<img width="1280" height="1280" alt="8275d052e451f11c2378615f4b59cb09" src="https://github.com/user-attachments/assets/419d0bde-8bf8-4add-81eb-dfec09c6ba9c" />
 
 ## 免责声明
 本工具仅用于技术研究，不构成任何投资建议。市场有风险，交易需谨慎。
