@@ -80,6 +80,7 @@ DEFAULT_TRADER_CONFIG: dict = {
         "sr_partial_fraction": 0.5,   # 平掉的比例
         "sr_partial_use_model": True, # 由概率模型把关：该关键位守住概率足够高才执行
         "sr_partial_min_phold": 0.55, # 守住概率门槛
+        "reentry_cooldown_sec": 60,   # 全平后同品种自动再入场冷却；0 可显式关闭
     },
     # ── 交易限制 ─────────────────────────────────────────────
     "min_trade_exposure": 0.05,           # |tanh(factor)| 低于此值视为空仓

@@ -35,6 +35,7 @@ sys.path.insert(0, str(SRC))
 
 from config import Config, load_trader_config  # noqa: E402
 from strategy_manager.signal import reconcile_action  # noqa: E402
+from trading.history import latest_full_close_time  # noqa: E402
 from trading.mt5_client import MT5Client  # noqa: E402
 from trading.risk import (  # noqa: E402
     LOCK_NONE,
@@ -63,6 +64,10 @@ PARTIAL_OVERRIDES_FILE = ROOT / "logs" / "sr_partial_overrides.json"
 # 风控不再把该仓位的止损拉回初始安全位（阶梯保本仍生效）
 SL_OVERRIDES_FILE = ROOT / "logs" / "sl_overrides.json"
 DIRECTION_TO_INT = {"LONG": 1, "SHORT": -1, "FLAT": 0}
+# 全平后再入场冷却默认秒数（trader_config.json → risk.reentry_cooldown_sec 可覆盖）
+REENTRY_COOLDOWN_SEC_DEFAULT = 60
+# 台账里冷却时间戳的保留窗口（超龄自动清理，防止无限增长）
+COOLDOWN_PRUNE_SEC = 86_400
 
 
 # ── 状态（仓位台账）─────────────────────────────────────────────────
@@ -73,7 +78,8 @@ class PositionBook:
     def __init__(self, mode: str) -> None:
         self.mode = mode  # "dry" | "live"
         self.state: dict = {"mode": mode, "next_ticket": 9_000_000_001,
-                            "positions": {}, "tickets": {}, "actions": []}
+                            "positions": {}, "tickets": {}, "actions": [],
+                            "cooldowns": {}}
         self._load()
 
     def _load(self) -> None:
@@ -86,6 +92,7 @@ class PositionBook:
                 self.state.setdefault("positions", {})
                 self.state.setdefault("tickets", {})
                 self.state.setdefault("actions", [])
+                self.state.setdefault("cooldowns", {})
         except (json.JSONDecodeError, OSError) as exc:
             logger.warning(f"[状态] portfolio_state.json 读取失败: {exc}")
 
@@ -142,6 +149,45 @@ class PositionBook:
 
     def manual_sl_tickets(self) -> set[int]:
         return {int(t) for t, v in self.state["tickets"].items() if v.get("manual_sl")}
+
+    # ── 全平后再入场冷却（持久化、重启安全）────────────────────
+
+    def mark_full_close(self, symbol: str, closed_at: float | None = None) -> None:
+        """记录该品种最近一次「全平」的墙钟时间（所有方向统一冷却）。
+
+        closed_at=None 表示由本进程刚执行/刚发现的全平，用当前时间。
+        """
+        ts = float(closed_at) if closed_at is not None else time.time()
+        if ts <= 0:
+            return
+        cds = self.state.setdefault("cooldowns", {})
+        prev = float(cds.get(symbol, 0) or 0)
+        if ts > prev:  # 只保留最近一次全平，重复对账不能延长冷却
+            cds[symbol] = ts
+            self.save()  # 全平事件立即持久化，不依赖循环结束
+
+    def _prune_cooldowns(self, now: float | None = None,
+                         retention_sec: float = COOLDOWN_PRUNE_SEC) -> None:
+        now = time.time() if now is None else now
+        cds = self.state.setdefault("cooldowns", {})
+        stale = [s for s, ts in cds.items() if now - float(ts or 0) > retention_sec]
+        for s in stale:
+            del cds[s]
+
+    def cooldown_start(self, symbol: str) -> float:
+        """该品种最近一次全平的墙钟时间（无记录返回 0）。"""
+        return float(self.state.get("cooldowns", {}).get(symbol, 0) or 0)
+
+    def in_cooldown(self, symbol: str, cooldown_sec: float,
+                    now: float | None = None) -> bool:
+        """全平后 cooldown_sec 秒内禁止再开仓（所有方向）。"""
+        if cooldown_sec <= 0:
+            return False
+        closed_at = self.cooldown_start(symbol)
+        if closed_at <= 0:
+            return False
+        now = time.time() if now is None else now
+        return (now - closed_at) < cooldown_sec
 
 
 # ── 主运行器 ────────────────────────────────────────────────────────
@@ -237,22 +283,30 @@ class TradingRunner:
         - 台账有而 MT5 无 → 已被止损/手动平仓，清台账并记录
         - 同步时顺带刷新现价/浮盈/止损/止盈，供看板展示
         """
+        snapshot = self.client.get_positions(strict=True)
         for symbol in list(self.book.state["positions"].keys()):
             info = self.book.get_position(symbol)
             if info is None:
                 continue
-            live = [p for p in self.client.get_positions(symbol)
+            live = [p for p in snapshot
                     if int(p.ticket) == int(info.get("ticket", 0))]
             if not live:
                 self.book.record_action(
                     f"{symbol} 持仓 ticket={info.get('ticket')} 已不存在（止损/手动平仓），清除台账"
                 )
                 self.book.clear_symbol(symbol)
+                # 外部全平（服务器止损/止盈、手动平仓）→ 同样进入再入场冷却；
+                # 精确时间用成交历史对账，失败时退回当前时间
+                if not any(p.symbol == symbol for p in snapshot):
+                    closed_at = self._external_close_time(symbol, info)
+                    self.book.mark_full_close(symbol, closed_at)
+                self.book.save()
                 continue
             p = live[0]
             from trading.mt5_client import position_to_dict
             view = position_to_dict(self.client, p, self._server_offset)
             info.update({
+                "identifier": int(getattr(p, "identifier", p.ticket)),
                 "volume": view["volume"],
                 "open_price": view["open_price"],
                 "sl": view["sl"],
@@ -270,7 +324,7 @@ class TradingRunner:
             if info is None:
                 return 0
             return 1 if info["direction"] == "BUY" else -1
-        positions = self.client.get_positions(symbol)
+        positions = self.client.get_positions(symbol, strict=True)
         has_buy = any(p.type == 0 for p in positions)
         has_sell = any(p.type == 1 for p in positions)
         if has_buy and has_sell:
@@ -283,6 +337,42 @@ class TradingRunner:
 
     # ── 平仓 / 开仓 ─────────────────────────────────────────────
 
+    def _reentry_cooldown_sec(self) -> float:
+        """全平后再入场冷却秒数（trader_config.json → risk.reentry_cooldown_sec）。
+
+        0 = 禁用；缺省/非法/负值回退 60 秒。
+        """
+        try:
+            cfg = load_trader_config()
+            val = float((cfg.get("risk") or {}).get(
+                "reentry_cooldown_sec", REENTRY_COOLDOWN_SEC_DEFAULT))
+        except (OSError, TypeError, ValueError):
+            val = float(REENTRY_COOLDOWN_SEC_DEFAULT)
+        if not math.isfinite(val) or val < 0:
+            val = float(REENTRY_COOLDOWN_SEC_DEFAULT)
+        return val
+
+    def _cooldown_remaining(self, symbol: str) -> float:
+        """该品种冷却剩余秒数（≤0 表示不在冷却中）。"""
+        cd = self._reentry_cooldown_sec()
+        if cd <= 0:
+            return 0.0
+        closed_at = self.book.cooldown_start(symbol)
+        if closed_at <= 0:
+            return 0.0
+        remaining = cd - (time.time() - closed_at)
+        return remaining if remaining > 0 else 0.0
+
+    def _block_open_cooldown(self, symbol: str) -> bool:
+        """处于冷却期则记录并返回 True（禁止开仓）。"""
+        remaining = self._cooldown_remaining(symbol)
+        if remaining <= 0:
+            return False
+        self.book.record_action(
+            f"{symbol} 全平后再入场冷却中，剩余 {remaining:.0f} 秒，禁止开仓"
+        )
+        return True
+
     def _close_symbol(self, symbol: str) -> bool:
         """平掉该品种全部仓位并确认。成功返回 True。"""
         if self.book.mode == "dry":
@@ -292,26 +382,33 @@ class TradingRunner:
             ok = self.client.close_position(symbol, int(info["ticket"]))
             if ok:
                 self.book.clear_symbol(symbol)
+                self.book.mark_full_close(symbol)   # 全平 → 进入再入场冷却
                 self.book.record_action(f"{symbol} dry-run 平仓 {info['direction']} 成功")
             return ok
-        # live
+        # live：只有成功查询确认全平才记录，空调用不刷新冷却。
+        had_position = self.book.get_position(symbol) is not None
         for attempt in range(3):
-            positions = self.client.get_positions(symbol)
+            positions = self.client.get_positions(symbol, strict=True)
             if not positions:
                 self.book.clear_symbol(symbol)
+                if had_position:
+                    self.book.mark_full_close(symbol)
                 return True
+            had_position = True
             ok = self.client.close_symbol_all(symbol)
             if ok:
                 time.sleep(0.5)
-                if not self.client.get_positions(symbol):
+                if not self.client.get_positions(symbol, strict=True):
                     self.book.clear_symbol(symbol)
+                    self.book.mark_full_close(symbol)   # 全平 → 进入再入场冷却
                     self.book.record_action(f"{symbol} 平仓成功")
                     return True
             logger.warning(f"[平仓] {symbol} 第 {attempt+1} 次尝试未完全平掉，重试")
             time.sleep(0.5)
-        remaining = self.client.get_positions(symbol)
+        remaining = self.client.get_positions(symbol, strict=True)
         if not remaining:
             self.book.clear_symbol(symbol)
+            self.book.mark_full_close(symbol)
             return True
         self.book.record_action(f"{symbol} 平仓失败（仍有 {len(remaining)} 笔持仓）")
         return False
@@ -325,6 +422,15 @@ class TradingRunner:
     def _open_position(self, symbol: str, direction: str, binding: dict,
                        strategy_path: str) -> bool:
         """开仓（带初始止损）。成功返回 True 并写台账。"""
+        if self.book.mode == "live":
+            self._sync_live_positions()
+        if self._block_open_cooldown(symbol):
+            return False
+        if not self._backfill_cooldowns_from_history():
+            self.book.record_action(f"{symbol} 冷却历史对账不可用，暂缓开仓")
+            return False
+        if self._block_open_cooldown(symbol):
+            return False
         lot = self._normalize_lot(symbol, float(binding.get("lot", 0.01)))
         if lot <= 0:
             self.book.record_action(f"{symbol} 手数无效，放弃开仓")
@@ -465,6 +571,56 @@ class TradingRunner:
             + (f" TP={info['tp'] or tp:.5f}" if (info['tp'] or tp) else "")
             + (" " + sr_summary if sr_summary else "")
         )
+        return True
+
+    def _external_close_time(self, symbol: str, info: dict) -> float | None:
+        """外部全平（服务器止损/止盈、手动平仓）的精确墙钟时间。
+
+        用成交历史对账：deal.time 是服务器伪时间戳，减去 server_time_offset
+        换算回本机墙钟。查不到/异常时返回 None（调用方退回当前时间）。
+        """
+        try:
+            offset = getattr(self, "_server_offset", None)
+            if offset is None:
+                return None
+            deals = self.client.history_deals_get(
+                position=int(info.get("identifier") or info["ticket"]))
+            t = latest_full_close_time(deals, symbol)
+            if not t:
+                return None
+            return min(time.time(), float(t) - float(offset))
+        except Exception as exc:
+            logger.warning(f"[冷却] {symbol} 成交历史对账失败: {exc}")
+            return None
+
+    def _backfill_cooldowns_from_history(self) -> bool:
+        """每圈/入场前只读对账，包含离线期间全平及旧冷却后的新全平。
+
+        查询覆盖当前冷却窗口，client 补取完整 position 历史以验证入场量。
+        查询失败返回 False：仅阻止新入场，不能妨碍持仓保护/平仓。
+        """
+        if self.book.mode != "live" or self._reentry_cooldown_sec() == 0:
+            return True
+        offset = getattr(self, "_server_offset", None)
+        if offset is None:
+            return False
+        now = time.time()
+        window = max(self._reentry_cooldown_sec(), 60) + 120
+        try:
+            positions = self.client.get_positions(strict=True)
+            deals = self.client.history_deals_get(now + offset - window, now + offset + 1)
+            if deals is None:
+                return False
+        except Exception as exc:
+            logger.warning(f"[冷却] 历史对账不可用，暂缓入场: {exc}")
+            return False
+        held = {p.symbol for p in positions}
+        symbols = {str(d.symbol) for d in deals if getattr(d, "symbol", None)}
+        for symbol in symbols - held:
+            t = latest_full_close_time(deals, symbol, magic=self.client.magic)
+            if t:
+                self.book.mark_full_close(symbol, min(now, float(t) - offset))
+        self.book._prune_cooldowns(now, max(COOLDOWN_PRUNE_SEC, window))
         return True
 
     def _respect_tp_level(self, symbol: str, direction: str, tick: dict,
@@ -729,6 +885,7 @@ class TradingRunner:
             ok = self.client.close_position(symbol, int(info["ticket"]))
             if ok:
                 self.book.clear_symbol(symbol)
+                self.book.mark_full_close(symbol)   # dry 全平 → 进入再入场冷却
                 self.book.record_action(
                     f"{symbol} [DRY-RUN] 触发止盈平仓 @≈{tp:.5f}（{profit*100:+.2f}%）"
                 )
@@ -766,6 +923,9 @@ class TradingRunner:
 
         if action in ("OPEN_LONG", "OPEN_SHORT"):
             want = "BUY" if action == "OPEN_LONG" else "SELL"
+            # 全平后再入场冷却：60 秒内（可配）禁止任何方向重新开仓
+            if self._block_open_cooldown(symbol):
+                return
             # 防御：开仓前确保没有残留仓位
             if self._current_direction(symbol) != 0:
                 if not self._close_symbol(symbol):
@@ -779,6 +939,7 @@ class TradingRunner:
 
         if action in ("REVERSE_TO_LONG", "REVERSE_TO_SHORT"):
             want = "BUY" if action == "REVERSE_TO_LONG" else "SELL"
+            # 平仓始终允许；全平后由 _open_position 统一执行冷却拦截。
             self.book.record_action(
                 f"{symbol} 信号反向 {direction}（强度{strength:.2f}）→ 先平旧仓再反手"
             )
@@ -1035,6 +1196,8 @@ class TradingRunner:
                 # 同步 live 持仓 → 台账
                 if self.book.mode == "live":
                     self._sync_live_positions()
+                    # 重启后冷却兜底：台账缺失时用成交历史补记（对账）
+                    self._backfill_cooldowns_from_history()
 
                 # 信号循环：新K线才对账
                 for binding in self.bindings:

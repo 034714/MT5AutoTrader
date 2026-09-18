@@ -4,6 +4,7 @@ __pycache__/
 *.pyc
 *.pid
 STOP_SIGNAL
+TRAIN_STOP
 portfolio_state.json
 
 # ── 用户数据（训练成果与配置）──────────────────────
@@ -16,6 +17,8 @@ checkpoints/
 backtest_output/
 training_history_*.json
 training_time_*.json
+candidates/
+src/candidate_deployment_evidence.py
 
 # ── 凭证 ───────────────────────────────────────────
 .env

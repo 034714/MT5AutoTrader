@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """构建 Windows 便携版发布包（内嵌 Python + 预装依赖）。
 
-产物: dist/MT5AutoTrader-1.0.4-windows-x64.zip
+产物: dist/MT5AutoTrader-1.1.0-windows-x64.zip
 步骤:
   1. 下载 Windows embeddable Python 3.11（python.org / 华为云镜像）
   2. 解压到 runtime/，启用 pip（_pth + get-pip）
@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parent.parent
 DIST = ROOT / "dist"
 PKG = DIST / "MT5AutoTrader"
 RUNTIME = PKG / "runtime"
+DEV_RUNTIME = ROOT / "runtime"
 PY_VER = "3.11.9"
 PY_ZIP_NAME = f"python-{PY_VER}-embed-amd64.zip"
 PY_URLS = [
@@ -60,7 +61,15 @@ def run(cmd, **kw):
 
 
 def main():
-    # runtime 已就绪时跳过下载与装依赖（断点续跑）
+    # 每次从干净暂存目录构建；运行时优先复用已验证的开发 runtime，
+    # 但绝不复用上一次包内的源码/用户文件。
+    if PKG.exists():
+        print("[清理] 删除旧源码暂存目录")
+        shutil.rmtree(PKG, ignore_errors=True)
+    PKG.mkdir(parents=True, exist_ok=True)
+    if (DEV_RUNTIME / "python.exe").exists():
+        print("[复用] 已验证的开发 runtime/")
+        shutil.copytree(DEV_RUNTIME, RUNTIME)
     ready = False
     if (RUNTIME / "python.exe").exists():
         chk = subprocess.run([str(RUNTIME / "python.exe"), "-c",
@@ -68,11 +77,8 @@ def main():
                              capture_output=True)
         ready = chk.returncode == 0
     if not ready:
-        if DIST.exists():
-            print("[清理] 删除旧 dist/")
-            shutil.rmtree(DIST, ignore_errors=True)
-        PKG.mkdir(parents=True)
-
+        if RUNTIME.exists():
+            shutil.rmtree(RUNTIME, ignore_errors=True)
         # 1. 内嵌 Python
         pyzip = download(PY_URLS, DIST / PY_ZIP_NAME, "embeddable python")
         print("[解压] runtime/")
@@ -107,7 +113,8 @@ def main():
          "import torch, numpy, pandas, pyarrow, matplotlib, fastapi, uvicorn, loguru, dotenv, MetaTrader5; "
          "print('deps ok, torch', torch.__version__)"])
 
-    # 4. 项目源码
+    # 4. 项目源码：暂存目录已在开始时清空；在保留刚验证过的 runtime/ 的同时，
+    # 从已提交 HEAD 导出源码，避免任何本机配置、策略或已删除文件进入发行包。
     print("[导出] git archive")
     archive = subprocess.run(["git", "archive", "--format=zip", "HEAD"],
                              cwd=ROOT, capture_output=True)
@@ -143,7 +150,7 @@ def main():
     (PKG / "install.bat").write_bytes(install_bat.encode("ascii"))
 
     # 6. 打 zip
-    out = DIST / "MT5AutoTrader-1.0.4-windows-x64.zip"
+    out = DIST / "MT5AutoTrader-1.1.0-windows-x64.zip"
     print("[打包]", out)
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
         for base, _dirs, files in os.walk(PKG):

@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent          # src\（导入用）
@@ -32,6 +33,9 @@ cfgmod.save_trader_config(json.loads(json.dumps(cfgmod.DEFAULT_TRADER_CONFIG)))
 from config import Config  # noqa: E402
 
 import trading.runner as runner_mod  # noqa: E402
+import trading.mt5_client as client_mod  # noqa: E402
+# No native MT5 calls, including position_to_dict's read-only history lookup.
+client_mod.mt5 = None
 from trading.risk import (  # noqa: E402
     LOCK_NONE,
     RiskManager,
@@ -131,8 +135,11 @@ class MockClient:
         pass
 
     # 持仓
-    def get_positions(self, symbol=None, magic=None):
+    def get_positions(self, symbol=None, magic=None, strict=False):
         return [p for p in self.positions if symbol is None or p.symbol == symbol]
+
+    def history_deals_get(self, *args, **kwargs):
+        return []
 
     # 下单
     def market_open(self, symbol, direction, lot, sl=None, tp=None, comment=""):
@@ -194,6 +201,7 @@ def make_runner(client: MockClient, mode: str) -> runner_mod.TradingRunner:
     r._started_at = "test"
     r._last_signal_info = {}
     r._signal_bars = 1000
+    r._server_offset = 0
     return r
 
 
@@ -253,11 +261,15 @@ def test_reverse_close_then_open():
     close_idx = next((i for i, k in enumerate(kinds) if k in ("close", "close_all")), -1)
     open_idx = next((i for i, k in enumerate(kinds) if k == "open"), -1)
     check("有平仓动作", close_idx >= 0, str(client.calls))
-    check("有开仓动作", open_idx >= 0, str(client.calls))
-    check("平仓在开仓之前", close_idx >= 0 and open_idx > close_idx, str(kinds))
-    check("最终只有 1 笔空仓",
-          len(client.positions) == 1 and client.positions[0].type == 1,
-          str([(p.ticket, p.type) for p in client.positions]))
+    check("反手全平后本轮不开仓", open_idx == -1, str(client.calls))
+    check("全平后处于冷却", r.book.in_cooldown("ETHUSD_", 60))
+    check("最终空仓等待冷却", not client.positions, str(client.positions))
+    from unittest.mock import patch
+    with patch.object(runner_mod.time, "time",
+                      return_value=r.book.cooldown_start("ETHUSD_") + 60):
+        r._reconcile(binding, "SHORT", 0.8)
+    check("60秒后新信号允许反向开仓",
+          len(client.positions) == 1 and client.positions[0].type == 1)
 
 
 # ── 测试 4：平仓失败禁止开新仓 ───────────────────────────────────
@@ -368,9 +380,10 @@ def test_ladder():
 # ── 测试 7：dry-run 台账不被误删 + 完整闭环 ──────────────────────
 
 def test_dry_run_book():
-    print("\n[7] dry-run 台账（本地模拟仓不被同步误删）")
+    print("\n[7] dry-run 台账（冷却禁用时的兼容闭环）")
     client = MockClient(dry_run=True, bid=100.0, ask=100.0)
     r = make_runner(client, "dry")
+    r._reentry_cooldown_sec = lambda: 0
     binding = {"symbol": "ETHUSD_", "strategy_file": "s.json", "lot": 0.01}
 
     r._reconcile(binding, "LONG", 0.8)
@@ -433,11 +446,11 @@ def test_live_sync():
     acts = " ".join(a["action"] for a in r.book.state["actions"])
     check("清理已记录", "已不存在" in acts, acts)
 
-    # 下一个同向信号应能重新开仓（不被误判为已有持仓）
+    # 下一同向信号需等待冷却，不能立即重开
     client.calls.clear()
     r._reconcile({"symbol": "ETHUSD_", "strategy_file": "s.json", "lot": 0.01}, "LONG", 0.8)
-    check("止损后同向信号可重新开仓",
-          len([c for c in client.calls if c[0] == "open"]) == 1, str(client.calls))
+    check("止损后同向信号被冷却阻止",
+          len([c for c in client.calls if c[0] == "open"]) == 0, str(client.calls))
 
 
 # ── 测试 9：券商最小止损距离 ────────────────────────────────────
@@ -480,7 +493,8 @@ def test_max_positions():
         acts = " ".join(a["action"] for a in r.book.state["actions"])
         check("拒绝原因已记录", "最大持仓数" in acts, acts)
 
-        # 反手不应被上限挡住（先平后开，净持仓数不变）
+        # 此用例隔离持仓上限；禁用冷却时仍可先平后开。
+        r._reentry_cooldown_sec = lambda: 0
         client.calls.clear()
         r._reconcile({"symbol": "ETHUSD_", "strategy_file": "s.json", "lot": 0.01}, "SHORT", 0.8)
         check("反手不被持仓上限阻挡",
@@ -936,13 +950,14 @@ def test_pending_kind():
     check("卖贴价拒绝对称", kind is None, why)
 
 
-def _deal(position_id, typ, entry, volume, magic, profit=0.0, price=100.0, time=0):
+def _deal(position_id, typ, entry, volume, magic, profit=0.0, price=100.0, time=0,
+          symbol="BTCUSD_"):
     """构造最小 deal 假对象（group_history_deals 用）。"""
     from types import SimpleNamespace
     return SimpleNamespace(position_id=position_id, type=typ, entry=entry,
                            volume=volume, magic=magic, profit=profit,
                            commission=0.0, swap=0.0, price=price, time=time,
-                           symbol="BTCUSD_", comment="")
+                           symbol=symbol, comment="")
 
 
 def test_history_partial_close():
@@ -982,6 +997,180 @@ def test_history_partial_close():
 #   python tests/test_trading.py quick        # 秒级核心冒烟
 #   python tests/test_trading.py -v ...       # 显示每个 PASS（默认只报失败）
 
+# ── 全平后再入场冷却（risk.reentry_cooldown_sec，默认60秒）────────
+
+def test_reentry_cooldown():
+    print("\n— 全平后再入场冷却（品种级、所有方向、持久化）—")
+    import unittest.mock
+    client = MockClient(dry_run=False, bid=100.0, ask=100.1)
+    r = make_runner(client, "live")
+    binding = {"symbol": "ETHUSD_", "strategy_file": "s.json", "lot": 0.01}
+
+    # 默认参数
+    check("默认冷却秒数为 60", r._reentry_cooldown_sec() == 60.0,
+          str(r._reentry_cooldown_sec()))
+
+    # 冷却未触发时正常开仓
+    r._reconcile(binding, "LONG", 0.8)
+    check("无冷却时正常开仓", len([c for c in client.calls if c[0] == "open"]) == 1)
+
+    # 手动（runner 控制）平仓 → 全平 → 立即进入冷却
+    client.calls.clear()
+    r._reconcile(binding, "FLAT", 0.01)
+    check("全平已记录冷却时间戳", r.book.cooldown_start("ETHUSD_") > 0)
+    ts1 = r.book.cooldown_start("ETHUSD_")
+
+    # 冷却期内多/空/反手全部禁止
+    client.calls.clear()
+    r._reconcile(binding, "LONG", 0.8)
+    r._reconcile(binding, "SHORT", 0.8)
+    opens = [c for c in client.calls if c[0] == "open"]
+    check("冷却期内禁止再开多", len(opens) == 0, str(client.calls))
+    check("冷却期内禁止反手开空", len(opens) == 0, str(client.calls))
+    acts = " ".join(a["action"] for a in r.book.state["actions"])
+    check("冷却记录到动作日志", "冷却中" in acts, acts)
+    check("冷却期内持仓仍为 0", r._current_direction("ETHUSD_") == 0)
+
+    # 持久化：重启后台账恢复冷却时间戳
+    r.book.save()
+    book2 = runner_mod.PositionBook("live")
+    check("重启后冷却时间戳恢复", abs(book2.cooldown_start("ETHUSD_") - ts1) < 1e-6,
+          f"{book2.cooldown_start('ETHUSD_')} vs {ts1}")
+    check("重启后仍处于冷却", book2.in_cooldown("ETHUSD_", 60))
+
+    # 冷却过期后可重新开仓（时间推进模拟）
+    future = ts1 + 61.0
+    check("61 秒后冷却结束", not book2.in_cooldown("ETHUSD_", 60, now=future))
+    with unittest.mock.patch.object(runner_mod.time, "time", return_value=future), \
+            unittest.mock.patch.object(runner_mod, "load_trader_config",
+                                       return_value={"risk": {}}):
+        client.calls.clear()
+        r._reconcile(binding, "LONG", 0.8)
+    check("冷却结束后可重新开仓",
+          len([c for c in client.calls if c[0] == "open"]) == 1, str(client.calls))
+
+
+def test_reentry_cooldown_external_close():
+    print("\n— 外部止损/手动平仓的冷却（成交历史对账）—")
+    client = MockClient(dry_run=False, bid=100.0, ask=100.1)
+    r = make_runner(client, "live")
+    binding = {"symbol": "ETHUSD_", "strategy_file": "s.json", "lot": 0.01}
+    r._reconcile(binding, "LONG", 0.8)
+    check("已建仓", r.book.get_position("ETHUSD_") is not None)
+
+    # 服务器止损：MT5 侧仓位消失（runner 未参与平仓）
+    client.positions.clear()
+    # 成交历史：deal.time 是服务器伪时间戳（UTC+3 → offset=10800）
+    r._server_offset = 10800
+    close_wall = time.time() - 10.0            # 10 秒前全平（本机墙钟）
+    server_t = close_wall + 10800              # 对应的服务器伪时间戳
+    deals = [
+        _deal(777, 0, 0, 0.01, client.magic, time=server_t - 3600, symbol="ETHUSD_"),
+        _deal(777, 1, 1, 0.01, 0, time=server_t, symbol="ETHUSD_"),  # 服务器止损，magic=0
+    ]
+    client.history_deals_get = lambda *a, **k: deals
+    r._sync_live_positions()
+    check("外部全平后台账被清理", r.book.get_position("ETHUSD_") is None)
+    ts = r.book.cooldown_start("ETHUSD_")
+    check("冷却时间戳来自成交历史（约10秒前）",
+          abs(ts - close_wall) < 5.0, f"ts={ts} expect≈{close_wall}")
+
+    # 冷却期内禁止重新开仓
+    client.calls.clear()
+    r._reconcile(binding, "LONG", 0.8)
+    check("外部止损后冷却期内禁止开仓",
+          len([c for c in client.calls if c[0] == "open"]) == 0, str(client.calls))
+
+    # 部分平仓（止盈一半）不算全平，不应触发冷却
+    client2 = MockClient(dry_run=False, bid=100.0, ask=100.1)
+    r2 = make_runner(client2, "live")
+    client2.positions.append(MockPosition(888, "ETHUSD_", 0, 0.02, 100.0, 98.0,
+                                          client2.magic))
+    r2.book.set_position("ETHUSD_", {
+        "ticket": 888, "direction": "BUY", "volume": 0.02,
+        "open_price": 100.0, "open_time": "t", "sl": 98.0, "tp": 0.0,
+        "locked": LOCK_NONE, "dry_run": False,
+    })
+    deals_partial = [
+        _deal(888, 0, 0, 0.02, client2.magic, time=1000, symbol="ETHUSD_"),
+        _deal(888, 1, 1, 0.01, client2.magic, time=2000, symbol="ETHUSD_"),  # 只平一半
+    ]
+    client2.history_deals_get = lambda *a, **k: deals_partial
+    r2._sync_live_positions()
+    check("部分平仓不触发冷却", r2.book.cooldown_start("ETHUSD_") == 0,
+          str(r2.book.state.get("cooldowns")))
+    check("部分平仓后台账保留", r2.book.get_position("ETHUSD_") is not None)
+
+
+def test_reentry_cooldown_config_and_disable():
+    print("\n— 冷却配置：risk.reentry_cooldown_sec（可调/0禁用/非法回退）—")
+    import unittest.mock
+    client = MockClient(dry_run=False, bid=100.0, ask=100.1)
+    r = make_runner(client, "live")
+    binding = {"symbol": "ETHUSD_", "strategy_file": "s.json", "lot": 0.01}
+    r._reconcile(binding, "LONG", 0.8)
+    r._reconcile(binding, "FLAT", 0.01)      # 全平 → 冷却时间戳已记
+    check("冷却时间戳已记录", r.book.cooldown_start("ETHUSD_") > 0)
+
+    # cooldown=0 → 完全禁用，立即允许重开
+    with unittest.mock.patch.object(runner_mod, "load_trader_config",
+                                    return_value={"risk": {"reentry_cooldown_sec": 0}}):
+        check("0 = 禁用冷却", r._reentry_cooldown_sec() == 0.0)
+        client.calls.clear()
+        r._reconcile(binding, "LONG", 0.8)
+        check("禁用后同向信号立即重开",
+              len([c for c in client.calls if c[0] == "open"]) == 1, str(client.calls))
+
+    # 自定义 120 秒生效
+    with unittest.mock.patch.object(runner_mod, "load_trader_config",
+                                    return_value={"risk": {"reentry_cooldown_sec": 120}}):
+        check("自定义 120 秒生效", r._reentry_cooldown_sec() == 120.0)
+
+    # 非法值回退 60
+    with unittest.mock.patch.object(runner_mod, "load_trader_config",
+                                    return_value={"risk": {"reentry_cooldown_sec": "abc"}}):
+        check("非法值回退 60", r._reentry_cooldown_sec() == 60.0)
+    with unittest.mock.patch.object(runner_mod, "load_trader_config",
+                                    return_value={"risk": {"reentry_cooldown_sec": -5}}):
+        check("负值回退 60", r._reentry_cooldown_sec() == 60.0)
+
+    # 品种隔离：ETHUSD_ 冷却不影响 BTCUSD_
+    r.book.mark_full_close("ETHUSD_")
+    check("品种级隔离：BTCUSD_ 不受 ETHUSD_ 冷却影响",
+          not r.book.in_cooldown("BTCUSD_", 60))
+
+
+def test_reentry_cooldown_backfill_from_history():
+    print("\n— 重启后从成交历史补记冷却（兜底对账）—")
+    client = MockClient(dry_run=False, bid=100.0, ask=100.1)
+    r = make_runner(client, "live")
+    r.bindings = [{"symbol": "ETHUSD_", "strategy_file": "s.json", "lot": 0.01}]
+    r._server_offset = 10800
+    close_wall = time.time() - 30.0
+    server_t = close_wall + 10800
+    deals = [
+        _deal(999, 0, 0, 0.01, client.magic, time=server_t - 60, symbol="ETHUSD_"),
+        _deal(999, 1, 1, 0.01, 0, time=server_t, symbol="ETHUSD_"),
+    ]
+    client.history_deals_get = lambda *a, **k: deals
+    check("台账无冷却记录（模拟重启前未写盘）",
+          r.book.cooldown_start("ETHUSD_") == 0)
+    r._backfill_cooldowns_from_history()
+    ts = r.book.cooldown_start("ETHUSD_")
+    check("补记成功（约30秒前）", abs(ts - close_wall) < 5.0, f"ts={ts}")
+    check("补记后处于冷却", r.book.in_cooldown("ETHUSD_", 60))
+    # 已过期的全平：补记后不再拦截（不影响行为）
+    old_wall = time.time() - 3600.0
+    deals_old = [_deal(555, 0, 0, 0.01, client.magic, time=old_wall + 10800 - 60,
+                       symbol="ETHUSD_"),
+                 _deal(555, 1, 1, 0.01, 0, time=old_wall + 10800, symbol="ETHUSD_")]
+    client.history_deals_get = lambda *a, **k: deals_old
+    r2 = make_runner(client, "live")
+    r2._server_offset = 10800
+    r2._backfill_cooldowns_from_history()
+    check("过期全平补记后已不在冷却", not r2.book.in_cooldown("ETHUSD_", 60))
+
+
 DOMAINS: dict[str, tuple] = {
     "signal": (test_signal_threshold, test_real_signal_pipeline),
     "risk": (test_initial_stop, test_ladder, test_stops_level,
@@ -995,6 +1184,9 @@ DOMAINS: dict[str, tuple] = {
            test_sr_dry_run_tp_fill, test_sr_partial_plan,
            test_sr_dry_run_partial_fill, test_sr_live_partial_volume_sent,
            test_sr_live_manual_position_adopted, test_sr_partial_override),
+    "cooldown": (test_reentry_cooldown, test_reentry_cooldown_external_close,
+                 test_reentry_cooldown_config_and_disable,
+                 test_reentry_cooldown_backfill_from_history),
 }
 DOMAINS["quick"] = (test_signal_threshold, test_initial_stop, test_ladder)
 VERBOSE = "-v" in sys.argv

@@ -19,6 +19,7 @@ import torch
 
 from .config import ModelConfig
 from .engine import AlphaEngine
+from .backtest import SCORING_VERSION
 
 
 class IslandAlphaEngine:
@@ -36,11 +37,10 @@ class IslandAlphaEngine:
         self.islands: list[AlphaEngine] = []
         seed0 = base_seed if base_seed is not None else 2026
         for i in range(self.n_islands):
-            isl = AlphaEngine(data_manager=data_manager)
-            # 给每个 island 不同的随机初始化，增加多样性
+            # Seed before construction: model, AdamW, LoRD and rank monitor must
+            # all refer to the same parameters (never replace the model alone).
             torch.manual_seed(seed0 + i * 17)
-            isl.model = isl.model.__class__().to(ModelConfig.DEVICE)
-            isl.opt = torch.optim.AdamW(isl.model.parameters(), lr=1e-3)
+            isl = AlphaEngine(data_manager=data_manager)
             self.islands.append(isl)
 
         self.global_best_score = -float('inf')
@@ -80,6 +80,7 @@ class IslandAlphaEngine:
             path = str(ckpt_dir / f"island_ckpt_{tag}_step_{step:04d}.pt")
         payload = {
             "kind": "island",
+            "scoring_version": SCORING_VERSION,
             "step": step,
             "vocab_version": self.islands[0].checkpoint_state(step)["vocab_version"],
             "n_islands": self.n_islands,
@@ -125,7 +126,14 @@ class IslandAlphaEngine:
         if ckpt.get("python_rng_state") is not None:
             random.setstate(ckpt["python_rng_state"])
         self.global_history = ckpt.get("global_history", {"step": [], "best_score": []})
+        if ckpt.get("scoring_version") != SCORING_VERSION:
+            self.global_best_score = -float('inf')
+            self.global_best_formula = None
+            self.global_best_island = -1
+            self.global_history = {"step": [], "best_score": []}
+            self._update_global_best()
         step = int(ckpt.get("step", 0))
+        self._step = step
         print(f"[岛检查点] 已恢复 {path}：步数={step}，全局最优={self.global_best_score:.4f}")
         return step
 
@@ -200,6 +208,11 @@ class IslandAlphaEngine:
                 if isl.stopped_early:
                     print(f"\n>>> {phase_label} — Island {i+1}/{self.n_islands} "
                           "已因长期无改进停止，跳过")
+            active = [(i, isl) for i, isl in enumerate(self.islands)
+                      if not isl.stopped_early]
+            if not active:
+                print("[岛训练] 所有岛均因长期无改进停止，结束训练。")
+                break
             for i, _ in active:
                 print(f"\n>>> {phase_label} — Island {i+1}/{self.n_islands} "
                       f"steps [{start}:{end}]")

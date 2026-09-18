@@ -272,18 +272,25 @@ class MT5Client:
 
     # ── 持仓 ─────────────────────────────────────────────────────
 
-    def get_positions(self, symbol: str | None = None, magic: int | None = None) -> list:
-        """返回持仓 namedtuple 列表，按 magic 过滤。"""
+    def get_positions(self, symbol: str | None = None, magic: int | None = None,
+                      strict: bool = False) -> list:
+        """返回持仓（magic 过滤）；strict 模式失败抛错，不能将断线视为全平。"""
         if not self._connected:
+            if strict:
+                raise ConnectionError("MT5 positions unavailable: disconnected")
             return []
         try:
             if symbol is not None:
                 positions = mt5.positions_get(symbol=symbol)
             else:
                 positions = mt5.positions_get()
-        except Exception:  # pragma: no cover
+        except Exception as exc:  # pragma: no cover
+            if strict:
+                raise ConnectionError("MT5 positions query failed") from exc
             return []
         if positions is None:
+            if strict:
+                raise ConnectionError("MT5 positions query returned None")
             return []
         want_magic = self.magic if magic is None else magic
         return [p for p in positions if getattr(p, "magic", None) == want_magic]
@@ -599,6 +606,36 @@ class MT5Client:
         if info is None:
             return 0.01
         return float(getattr(info, "volume_min", 0.01) or 0.01)
+
+    def history_deals_get(self, date_from=None, date_to=None, *, position=None):
+        """只读历史查询。范围查询补取完整 position 历史，避免遗漏很早的入场。
+
+        日期参数是服务器伪 epoch；不做本地时区 datetime 转换。
+        None 表示查询失败，与无成交的空列表不同。
+        """
+        if not self._connected:
+            return None
+        try:
+            if position is not None:
+                return mt5.history_deals_get(position=int(position))
+            if date_from is None or date_to is None:
+                return None
+            recent = mt5.history_deals_get(int(date_from), int(date_to))
+            if recent is None:
+                return None
+            result = []
+            ids = {int(d.position_id) for d in recent
+                   if int(getattr(d, "position_id", 0)) > 0
+                   and int(getattr(d, "entry", -1)) in
+                   (mt5.DEAL_ENTRY_OUT, mt5.DEAL_ENTRY_OUT_BY)}
+            for pid in ids:
+                deals = mt5.history_deals_get(position=pid)
+                if deals is None:
+                    return None
+                result.extend(deals)
+            return result
+        except Exception:
+            return None
 
     # ── 内部 ─────────────────────────────────────────────────────
 

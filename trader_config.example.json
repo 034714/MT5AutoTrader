@@ -33,7 +33,8 @@
     "sr_partial_enabled": true,
     "sr_partial_fraction": 0.4,
     "sr_partial_use_model": true,
-    "sr_partial_min_phold": 0.6
+    "sr_partial_min_phold": 0.6,
+    "reentry_cooldown_sec": 60
   },
   "min_trade_exposure": 0.8,
   "max_lot_per_trade": 1.0,

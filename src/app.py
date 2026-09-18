@@ -14,10 +14,12 @@ from __future__ import annotations
 
 import ctypes
 import json
+import math
 import os
 import subprocess
 import sys
 import time
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -51,10 +53,11 @@ STATUS_FILE = LOGS_DIR / "runner_status.json"
 STOP_FILE = ROOT / "STOP_SIGNAL"
 STRATEGIES_DIR = ROOT / "strategies"
 BACKTEST_OUTPUT = ROOT / "backtest_output"
+_quick_bt_lock = threading.Lock()  # Bound expensive requests to one at a time.
 CREATE_NO_WINDOW = 0x08000000
 CREATE_NEW_PROCESS_GROUP = 0x00000200
 
-app = FastAPI(title="MT5AutoTrader", version="1.0.0")
+app = FastAPI(title="MT5AutoTrader", version="1.1.0")
 
 
 @app.middleware("http")
@@ -240,9 +243,21 @@ def api_status():
         client = _get_mt5_client()
         if client is not None:
             server_offset = client.server_time_offset()
-    # 账户净值采样（供历史页折线图）：每次轮询记一个点，内存保留最近 3 天
-    if account is not None and account.get("equity") is not None:
-        _push_equity_sample(account["equity"], account.get("balance"))
+    # Display and sampling always follow the terminal, not a stale Runner account.
+    client = _get_mt5_client()
+    ai = client.account_info() if client is not None else None
+    account = None
+    if ai is not None:
+        account = {"login": int(ai.login), "server": getattr(ai, "server", ""),
+                   "currency": getattr(ai, "currency", ""),
+                   "balance": round(float(ai.balance), 2),
+                   "equity": round(float(ai.equity), 2),
+                   "margin_free": round(float(ai.margin_free), 2)}
+        mt5_error = None
+    with _EQUITY_LOCK:
+        _sync_equity_account(ai)
+        if ai is not None:
+            _push_equity_sample(ai.equity, ai.balance)
     return {
         "runner_alive": runner["alive"],
         "runner_status": status,
@@ -313,73 +328,93 @@ def api_logs_export(name: str = "runner"):
 
 # ── 账户净值采样（内存环形缓冲，看板重启后从零开始积累）───────────────
 
-_EQUITY_SAMPLES: list[list[float]] = []   # [unix_ts, equity] 或 [unix_ts, equity, balance]
-_EQUITY_MAX_POINTS = 4320                 # 3 天 × 每 60 秒一点
+_EQUITY_SAMPLES: list[list[float]] = []
+_EQUITY_MAX_POINTS = 4320
+_EQUITY_LOCK = threading.RLock()
+_EQUITY_ACCOUNT = None
+_BALANCE_HISTORY_CACHE = (None, 0.0, [])
+_BALANCE_HISTORY_TTL = 300
+
+
+def _account_identity(ai):
+    if ai is None:
+        return None
+    return (str(getattr(ai, "server", "")), int(ai.login), str(getattr(ai, "currency", "")))
+
+
+def _sync_equity_account(ai):
+    global _EQUITY_ACCOUNT, _BALANCE_HISTORY_CACHE
+    key = _account_identity(ai)
+    if key != _EQUITY_ACCOUNT:
+        _EQUITY_ACCOUNT = key
+        _EQUITY_SAMPLES.clear()
+        _BALANCE_HISTORY_CACHE = (None, 0.0, [])
+    return key
 
 
 def _push_equity_sample(equity: float, balance: float | None = None) -> None:
     now = time.time()
     if _EQUITY_SAMPLES and now - _EQUITY_SAMPLES[-1][0] < 55:
-        return  # 每分钟记一个点即可（页面图表也是 60 秒读一次）
-    row: list[float] = [now, round(float(equity), 2)]
+        return
+    row = [now, round(float(equity), 2)]
     if balance is not None:
-        row.append(round(float(balance), 2))   # 余额列：净值图「余额」线在线段的延伸
+        row.append(round(float(balance), 2))
     _EQUITY_SAMPLES.append(row)
-    if len(_EQUITY_SAMPLES) > _EQUITY_MAX_POINTS:
-        del _EQUITY_SAMPLES[: len(_EQUITY_SAMPLES) - _EQUITY_MAX_POINTS]
+    del _EQUITY_SAMPLES[:-_EQUITY_MAX_POINTS]
 
 
 @app.get("/api/equity/history")
 def api_equity_history():
-    return {"points": _EQUITY_SAMPLES, "history": _balance_history_points()}
-
-
-# 历史余额推算结果缓存：(时刻, 点列表)。页面每 60 秒轮询本接口，
-# 流水重读很费，5 分钟刷新一次足够（余额历史本来就是粗粒度）。
-_BALANCE_HISTORY_CACHE: tuple[float, list] = (0.0, [])
-_BALANCE_HISTORY_TTL = 300
-
-
-def _balance_history_points(days: int = 90, max_points: int = 400) -> list:
-    """从 MT5 成交流水推算账户余额历史（粗粒度），供净值图回填。
-
-    MT5 不保存历史净值，只能按「每笔成交的盈亏+手续费+库存费+出入金」
-    从当前余额反推：起点余额 = 当前余额 - 窗口内全部变动，再逐笔累加。
-    返回 [[本机unix秒, balance], ...]，失败返回 []。
-    """
-    global _BALANCE_HISTORY_CACHE
-    now = time.time()
-    cached_ts, cached = _BALANCE_HISTORY_CACHE
-    if now - cached_ts < _BALANCE_HISTORY_TTL:
-        return cached
-    points: list = []
-    try:
+    with _EQUITY_LOCK:
         client = _get_mt5_client()
         ai = client.account_info() if client is not None else None
-        if client is not None and ai is not None:
-            import MetaTrader5 as mt5
-            to = datetime.now() + timedelta(days=1)
-            frm = datetime.now() - timedelta(days=days)
-            deals = mt5.history_deals_get(frm, to) or []
-            offset = client.server_time_offset() or 0
-            deltas: list[tuple[float, float]] = []
-            total = 0.0
-            for d in deals:
-                delta = float(d.profit) + float(d.commission) + float(d.swap)
-                total += delta
-                deltas.append((float(d.time) - offset, delta))
-            if deltas:
-                bal = float(ai.balance) - total
-                stride = max(1, len(deltas) // max_points)
-                for i, (ts, delta) in enumerate(deltas):
-                    bal += delta
-                    if i % stride == 0 or i == len(deltas) - 1:
-                        points.append([ts, round(bal, 2)])
-    except Exception as exc:
-        logger.warning(f"[净值图] 历史余额推算失败（只用在线采样）: {exc}")
+        key = _sync_equity_account(ai)
+        if key is None:
+            return {"points": [], "history": [], "account_key": None, "error": "MT5 未连接或未登录"}
+        history = _balance_history_points(client=client, account=ai)
+        if _account_identity(client.account_info()) != key:
+            _sync_equity_account(None)
+            raise HTTPException(409, "账户已切换，请重新读取历史曲线")
+        _push_equity_sample(ai.equity, ai.balance)
+        return {"points": list(_EQUITY_SAMPLES), "history": history, "account_key": list(key)}
+
+
+def _balance_history_points(days: int = 90, max_points: int = 400, *, client=None, account=None) -> list:
+    global _BALANCE_HISTORY_CACHE
+    with _EQUITY_LOCK:
+        client = client or _get_mt5_client()
+        ai = account if account is not None else (client.account_info() if client is not None else None)
+        key = _sync_equity_account(ai)
+        if key is None:
+            return []
+        cache_key = (key, days, max_points, float(ai.balance))
+        cached_key, cached_ts, cached = _BALANCE_HISTORY_CACHE
+        now = time.time()
+        if cache_key == cached_key and now - cached_ts < _BALANCE_HISTORY_TTL:
+            return cached
+        import MetaTrader5 as mt5
+        deals = mt5.history_deals_get(datetime.now() - timedelta(days=days), datetime.now() + timedelta(days=1))
+        if deals is None:
+            raise HTTPException(503, "MT5 历史成交读取失败，请稍后刷新")
+        offset = client.server_time_offset() or 0
+        deltas = sorted((float(d.time) - offset,
+                         float(d.profit) + float(d.commission) + float(d.swap) + float(getattr(d, "fee", 0))) for d in deals)
+        balance = float(ai.balance) - sum(delta for _, delta in deltas)
         points = []
-    _BALANCE_HISTORY_CACHE = (now, points)
-    return points
+        if deltas:
+            points.append([deltas[0][0] - 1, round(balance, 2)])
+            stride = max(1, len(deltas) // max_points)
+            for i, (ts, delta) in enumerate(deltas):
+                balance += delta
+                if i % stride == 0 or i == len(deltas) - 1:
+                    points.append([ts, round(balance, 2)])
+        else:
+            points = [[now - 1, round(balance, 2)], [now, round(balance, 2)]]
+        if _account_identity(client.account_info()) != key:
+            _sync_equity_account(None)
+            raise HTTPException(409, "读取期间账户已切换，请刷新")
+        _BALANCE_HISTORY_CACHE = (cache_key, now, points)
+        return points
 
 
 # ── 配置读写 ────────────────────────────────────────────────────────
@@ -577,9 +612,16 @@ def api_mt5_symbols():
         raise HTTPException(400, "MT5 未连接（请先打开 TMGM 终端并登录）")
     try:
         import MetaTrader5 as mt5
+        before = _account_identity(mt5.account_info())
+        if before is None:
+            raise HTTPException(503, "MT5 未登录，无法读取品种")
         symbols = mt5.symbols_get()
-        names = sorted({s.name for s in (symbols or [])})
-        return {"symbols": names[:2000]}
+        names = sorted({s.name for s in (symbols or []) if getattr(s, "visible", False)})
+        if _account_identity(mt5.account_info()) != before:
+            raise HTTPException(409, "读取品种期间 MT5 账户或服务商已切换，请重试")
+        return {"symbols": names[:2000], "account_key": list(before)}
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(500, str(exc))
 
@@ -1305,17 +1347,79 @@ def api_training_curve(symbol: str = ""):
             data = json.loads(path.read_text(encoding="utf-8"))
             steps = data.get("step") or []
             best = data.get("best_score") or []
-            n = min(len(steps), len(best))
-            points = [[int(steps[i]), round(float(best[i]), 4)] for i in range(n)]
+            points = []
+            for step, score in zip(steps, best):
+                try:
+                    step = int(step)
+                    score = float(score)
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                if not (math.isfinite(step) and math.isfinite(score)):
+                    continue
+                points.append([step, round(score, 4)])
             return {"symbol": path.stem.replace("training_history_", ""),
                     "points": points, "best": points[-1][1] if points else None,
-                    "file": path.name}
-        except (json.JSONDecodeError, OSError, ValueError):
+                    "file": path.name,
+                    "skipped_invalid": min(len(steps), len(best)) - len(points)}
+        except (json.JSONDecodeError, OSError, TypeError, ValueError, OverflowError):
             continue
     return {"symbol": symbol or None, "points": [], "best": None, "file": None}
 
 
 # ── 回测 ────────────────────────────────────────────────────────────
+
+
+def _quick_mt5_api():
+    # Do not initialize here: MT5.initialize may launch a closed terminal.
+    # Dashboard status owns its normal connection; quick backtest only reads it.
+    try:
+        import MetaTrader5 as mt5
+    except ImportError as exc:
+        raise HTTPException(503, "MetaTrader5 包不可用，无法读取真实行情") from exc
+    if mt5.terminal_info() is None:
+        raise HTTPException(503, "MT5 尚未连接；请打开并登录终端，在总览确认连接后重试")
+    return mt5
+
+
+@app.get("/api/backtest/quick/options")
+def api_quick_backtest_options(strategy_file: str, symbol: str = ""):
+    from config import DEFAULT_TRADER_CONFIG
+    from trading.quick_backtest import QuickBacktestError, get_options, read_config, resolve_strategy
+    try:
+        resolve_strategy(ROOT, strategy_file)  # Reject unsafe paths before touching MT5.
+        cfg = read_config(ROOT, DEFAULT_TRADER_CONFIG)
+        return get_options(ROOT, strategy_file, cfg, _quick_mt5_api(), symbol=symbol or None)
+    except QuickBacktestError as exc:
+        raise HTTPException(exc.status, str(exc)) from exc
+
+
+@app.post("/api/backtest/quick")
+def api_quick_backtest(payload: dict):
+    from config import DEFAULT_TRADER_CONFIG
+    from trading.quick_backtest import (QuickBacktestError, read_config, resolve_strategy,
+                                       run_quick_backtest, validate_request)
+    try:
+        validate_request(payload)
+        resolve_strategy(ROOT, payload.get("strategy_file"))
+    except QuickBacktestError as exc:
+        raise HTTPException(exc.status, str(exc)) from exc
+    if not _quick_bt_lock.acquire(blocking=False):
+        raise HTTPException(409, "已有快速回测正在运行，请稍后重试")
+    try:
+        cfg = read_config(ROOT, DEFAULT_TRADER_CONFIG)
+        mt5 = _quick_mt5_api()
+        offset = _mt5_client.server_time_offset() if _mt5_client is not None and _mt5_client.connected else None
+        return run_quick_backtest(ROOT, payload, cfg, mt5, server_offset_sec=offset)
+    except QuickBacktestError as exc:
+        raise HTTPException(exc.status, str(exc)) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning(f"[快速回测] 失败: {exc}")
+        raise HTTPException(503, f"快速回测失败，未产生结果: {exc}") from exc
+    finally:
+        _quick_bt_lock.release()
+
 
 @app.post("/api/backtest/start")
 def api_backtest_start(payload: dict):

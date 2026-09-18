@@ -26,6 +26,7 @@ from .config import ModelConfig
 
 _H1_PERIODS_PER_YEAR = 6240
 _SORTINO_CLIP        = 20.0
+SCORING_VERSION = "aligned-net-v2"
 
 _SECONDS_PER_YEAR = 365.25 * 86400.0
 
@@ -174,7 +175,7 @@ class MT5Backtest:
     # ──────────────────────────────────────────────────────────────────────
 
     def _ts_ic_stability(self, factors: Tensor, target_ret: Tensor) -> float:
-        """时序 IC 稳定性：每个品种内部 factor[t] 与 ret[t+1] 的相关性均值。
+        """时序 IC 稳定性：factor[t] 与已前移的 target_ret[t] 的相关性。
 
         比横截面 IC 更适合 5 品种宇宙（横截面 N=5 统计意义弱）。
 
@@ -187,8 +188,8 @@ class MT5Backtest:
 
         ic_list = []
         for n in range(N):
-            x = factors[n, :-1]
-            y = target_ret[n, 1:]
+            x = factors[n]
+            y = target_ret[n]
             xm = x - x.mean()
             ym = y - y.mean()
             sx = (xm ** 2).mean().sqrt()
@@ -405,6 +406,18 @@ class MT5Backtest:
     # Walk-Forward 辅助接口
     # ──────────────────────────────────────────────────────────────────────
 
+    def _oos_gate(self, score: Tensor, pnl: Tensor) -> Tensor:
+        """Losses cannot be improved by a multiplier or auxiliary bonuses.
+
+        This is a ranking guard, not a profitability guarantee. A positive
+        score still needs an independent, untouched out-of-sample backtest.
+        """
+        oos_sor = self._sortino(pnl).item()
+        if pnl.mean().item() <= 0:
+            penalty = 1.0 - max(0.1, 0.5 + oos_sor * 0.4)
+            return score.clamp(max=0.0) - score.abs() * penalty
+        return torch.where(score > 0, score * min(1.2, 1.0 + max(0.0, oos_sor) * 0.1), score)
+
     def evaluate_fold(
         self,
         factors:     Tensor,
@@ -417,9 +430,9 @@ class MT5Backtest:
         """在指定训练/验证切片上计算组合多目标得分。
 
         train_score：用于 REINFORCE 梯度更新（in-sample 多目标）。
-        val_score：用于选冠军，加入 OOS Sortino 门控：
-          - OOS Sortino <= 0：乘以 0.1~0.5 惩罚，强制冠军必须在验证段盈利
-          - OOS Sortino > 0：乘以最多 1.2 奖励
+        val_score：用于选冠军，加入符号安全的 OOS 净收益门控：
+          - OOS 净收益 <= 0：得分不大于零，负分不会因惩罚而变好
+          - OOS 净收益 > 0：仅正分获得最多 20% 奖励
         """
         position = compute_target_positions_stateless(factors)  # neutral band
 
@@ -450,14 +463,7 @@ class MT5Backtest:
             position[:, val_start:val_end],
             eval_bars=val_bars,
         )
-        oos_sor = self._sortino(pnl_val).item()
-        if oos_sor <= 0:
-            # OOS亏损：重惩罚（Sortino=-1 → mult=0.1；Sortino=0 → mult=0.5）
-            mult = max(0.1, 0.5 + oos_sor * 0.4)
-        else:
-            # OOS盈利：轻奖励（最多+20%）
-            mult = min(1.2, 1.0 + oos_sor * 0.1)
-        val_score = base_val * mult
+        val_score = self._oos_gate(base_val, pnl_val)
 
         return train_score, val_score
 
@@ -654,12 +660,7 @@ class MT5Backtest:
 
         # OOS 门控（最后 20%）
         pnl_oos = pnl[:, split:]
-        oos_sor = self._sortino(pnl_oos).item()
-        if oos_sor <= 0:
-            mult = max(0.1, 0.5 + oos_sor * 0.4)
-            score = score * mult
-        else:
-            score = score * min(1.2, 1.0 + oos_sor * 0.1)
+        score = self._oos_gate(score, pnl_oos)
 
         mean_oos = pnl_oos.mean().item()
         return score, mean_oos

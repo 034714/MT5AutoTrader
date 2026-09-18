@@ -190,6 +190,10 @@ def _seed_best_from_strategy(engine: AlphaEngine, symbol: str, timeframe: str | 
     except (json.JSONDecodeError, OSError) as e:
         print(f"  [警告] 读取已有策略失败: {e}")
         return
+    from model_core.backtest import SCORING_VERSION
+    if data.get("scoring_version") != SCORING_VERSION:
+        print(f"  [评分隔离] 不继承旧策略分数；保留原文件 {path}")
+        return
     formula = data.get("formula")
     score = data.get("best_score")
     if not formula or score is None:
@@ -203,7 +207,12 @@ def _seed_best_from_strategy(engine: AlphaEngine, symbol: str, timeframe: str | 
 
 
 def _save_strategy(engine: AlphaEngine, symbol: str, timeframe: str, data_file: str) -> None:
+    from model_core.engine import _strategy_write_allowed
+    from model_core.backtest import SCORING_VERSION
     path = pathlib.Path("strategies") / f"best_{file_tag(symbol, timeframe)}.json"
+    if engine.best_formula is None or not _strategy_write_allowed(str(path)):
+        print(f"  [策略保护] 无合格新冠军或旧口径不可比较，未覆盖 {path}；新结果保留在检查点中")
+        return
     path.parent.mkdir(exist_ok=True)
     # 若磁盘上已有更高分，不要用更弱结果覆盖
     if path.exists() and engine.best_formula is not None:
@@ -234,6 +243,7 @@ def _save_strategy(engine: AlphaEngine, symbol: str, timeframe: str, data_file: 
         except (json.JSONDecodeError, OSError, TypeError, ValueError):
             pass
     data = {
+        "scoring_version": SCORING_VERSION,
         "vocab_version": VOCAB_VERSION,
         "symbol": symbol,
         "timeframe": timeframe,

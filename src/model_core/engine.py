@@ -31,7 +31,7 @@ from tqdm import tqdm
 from .config import ModelConfig
 from .alphagpt import AlphaGPT, NewtonSchulzLowRankDecay, StableRankMonitor
 from .vm import StackVM
-from .backtest import MT5Backtest, estimate_periods_per_year
+from .backtest import MT5Backtest, estimate_periods_per_year, SCORING_VERSION
 from .vocab import FORMULA_VOCAB, VOCAB_VERSION, VocabVersionMismatchError  # task 12.2
 
 # P3：冠军在场时间稳健性校验所需
@@ -65,6 +65,17 @@ def _strategy_file_for_symbol(symbol: str | None, timeframe: str | None = None) 
     return _STRATEGY_FILE
 
 
+def _strategy_write_allowed(path: str) -> bool:
+    """Never overwrite a legacy/unreadable strategy using incomparable scores."""
+    p = pathlib.Path(path)
+    if not p.exists():
+        return True
+    try:
+        return json.loads(p.read_text(encoding="utf-8")).get("scoring_version") == SCORING_VERSION
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
 def _fallback_data_file_for_symbol(symbol: str) -> tuple[str | None, str | None]:
     """Read web_settings.json last_data_file when strategy JSON lacks data_file."""
     settings_path = pathlib.Path("web_settings.json")
@@ -96,34 +107,27 @@ def _fallback_data_file_for_symbol(symbol: str) -> tuple[str | None, str | None]
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _build_walk_forward_folds(T: int, n_folds: int = 5, gap: int = 20) -> list[dict]:
-    """构建 Walk-Forward 折叠。
+    """Rolling train/validation blocks with an explicitly reserved purge gap.
 
-    改为 rolling window（train_start = (k-1)*fold_size）以避免 expanding window
-    导致早期折的 val 数据被后续折的 train 切片包含，造成 val_score 不再严格 OOS。
-
-    同时修正最后一折 val_end = min(val_start + fold_size, T)，避免最后一折 val
-    大小不均导致均值被该折主导。
+    Reduce the number of blocks for short data, never silently erase the gap.
+    Later training windows may reuse earlier validation data: these folds are
+    search validation, NOT an untouched final test set.
     """
-    fold_size = T // n_folds
+    if T < 4 or n_folds < 2 or gap < 0:
+        raise ValueError("Walk-forward needs T >= 4, n_folds >= 2 and gap >= 0")
+    while n_folds > 2 and (T - gap * (n_folds - 1)) // n_folds < 2:
+        n_folds -= 1
+    fold_size = (T - gap * (n_folds - 1)) // n_folds
     if fold_size < 2:
-        return [{"train_start": 0, "train_end": T, "val_start": 0, "val_end": T, "gap": 0}]
-    total_required = fold_size * n_folds + gap * (n_folds - 1)
-    if total_required > T:
-        gap = max(0, (T - fold_size * n_folds) // n_folds)
+        raise ValueError("Not enough bars for separate train/validation blocks and WF_GAP")
     folds = []
     for k in range(1, n_folds):
-        # rolling window：每折 train 起点前移，避免包含早期折的 val 切片
-        train_start = (k - 1) * fold_size
-        train_end   = k * fold_size
-        val_start   = train_end + gap
-        # 最后一折 val_end 用 min 避免超出 T，且与其他折大小一致
-        val_end     = min(val_start + fold_size, T)
-        if val_start >= T or val_end <= val_start:
-            break
+        train_start = (k - 1) * (fold_size + gap)
+        train_end = train_start + fold_size
+        val_start = train_end + gap
         folds.append({"train_start": train_start, "train_end": train_end,
-                      "val_start": val_start, "val_end": val_end, "gap": gap})
-    if not folds:
-        return [{"train_start": 0, "train_end": T, "val_start": 0, "val_end": T, "gap": 0}]
+                      "val_start": val_start, "val_end": val_start + fold_size,
+                      "gap": gap})
     return folds
 
 
@@ -177,30 +181,33 @@ class ConstrainedSampler:
                    prev_token: int | None = None,
                    infected_chain_len: int = 0) -> torch.Tensor:
         remaining = total_steps - step_idx
+        if remaining < 1:
+            raise ValueError("No token slots remain")
         mask = torch.ones(self.vocab_size, dtype=torch.bool, device=device)
+        structural = mask.clone()
+        max_reduction = max(0, -min(self.delta.values()))
         for tid in range(self.vocab_size):
-            d         = self.delta[tid]
-            new_depth = stack_depth + d
-            if new_depth < 1:
-                mask[tid] = False;  continue
-            min_future = new_depth + (remaining - 1) * (-2)
-            max_future = new_depth + (remaining - 1) * 1
-            if 1 < min_future or 1 > max_future:
-                mask[tid] = False
+            arity = 0 if tid < self.feat_offset else self.arity_map.get(tid, 1)
+            new_depth = stack_depth + self.delta[tid]
+            min_future = new_depth - (remaining - 1) * max_reduction
+            max_future = new_depth + remaining - 1
+            if stack_depth < arity or new_depth < 1 or not min_future <= 1 <= max_future:
+                mask[tid] = structural[tid] = False
+                continue
             # ── 算子链约束（感染模型）──────────────────────────────
             # 如果已感染且感染链 >= 2，禁止再使用传播算子
             # （允许恢复算子和非传播算子如 ADD/SUB/MUL）
             if infected_chain_len >= 2 and tid in self.infected_propagating_ids:
                 mask[tid] = False
-            # 如果已感染且感染链 >= 3，禁止所有算子（强制恢复或结束）
-            # 实际上不禁止恢复算子，只禁止传播和恒正算子
-            if infected_chain_len >= 3:
-                if tid in self.infected_propagating_ids or tid in self.positive_only_ids:
-                    mask[tid] = False
+            if infected_chain_len >= 3 and (tid in self.infected_propagating_ids
+                                            or tid in self.positive_only_ids):
+                mask[tid] = False
+        if not structural.any():
+            # 结构上完全走死（不应发生，arith_bounds + arity 需 ≥1 可达）
+            raise ValueError("No structurally valid token: increase MAX_FORMULA_LEN")
         if not mask.any():
-            for tid in range(self.vocab_size):
-                if stack_depth + self.delta[tid] >= 1:
-                    mask[tid] = True
+            # Relax only the heuristic, never arity or final-stack constraints.
+            mask = structural
         return mask
 
     def apply_mask_to_logits(self, logits: torch.Tensor, stack_depths: list[int],
@@ -412,22 +419,18 @@ class AlphaEngine:
                     ic_i = sum(fold_ic) / len(fold_ic)
                 else:
                     T_total = res.shape[1]
-                    split_pt = max(int(T_total * 0.8), T_total - 100)
-                    train_score, _ = self.bt.evaluate(res, {}, t_ret)
-                    ic_m0, _ = AlphaEngine._compute_ic(res, t_ret)
+                    if T_total < 4:
+                        raise ValueError("Need separate train and validation samples")
+                    split_pt = min(T_total - 2, max(2, int(T_total * 0.8)))
+                    train_score, vl_sc = self.bt.evaluate_fold(
+                        res, t_ret, 0, split_pt, split_pt, T_total,
+                    )
+                    ic_m0, _ = AlphaEngine._compute_ic(res[:, :split_pt], t_ret[:, :split_pt])
                     train_score = AlphaEngine._apply_ic_gate(
                         ModelConfig.REWARD_ALPHA * train_score, ic_m0
                     )
-                    if split_pt < T_total - 1:
-                        vl_sc, _ = self.bt.evaluate_fold(
-                            res, t_ret, 0, split_pt, split_pt, T_total,
-                        )
-                        ic_v0, _ = AlphaEngine._compute_ic(
-                            res[:, split_pt:], t_ret[:, split_pt:],
-                        )
-                        val_score = AlphaEngine._apply_ic_gate(vl_sc, ic_v0)
-                    else:
-                        val_score = train_score
+                    ic_v0, _ = AlphaEngine._compute_ic(res[:, split_pt:], t_ret[:, split_pt:])
+                    val_score = AlphaEngine._apply_ic_gate(vl_sc, ic_v0)
                     ic_i = ic_m0.item()
                 ic_full, ic_stab_full = AlphaEngine._compute_ic(res, t_ret)
 
@@ -445,12 +448,25 @@ class AlphaEngine:
             if use_wf:
                 _corr_slice = (folds[0]["train_start"], folds[0]["train_end"])
             else:
-                _corr_slice = (0, max(int(res.shape[1] * 0.8), res.shape[1] - 100))
-            reward = self._apply_corr_penalty(reward, res, _corr_slice)
-            val_score_out = self._apply_corr_penalty(val_score_out, res, _corr_slice)
+                _corr_slice = (0, split_pt)
+            reward = self._apply_corr_penalty(reward, res, _corr_slice, factor_pool_snapshot)
+            # Ranking must be stationary: pool membership is an exploration
+            # penalty only, otherwise an unchanged champion loses score on replay.
 
+            position = compute_target_positions_stateless(res)
+            prev = torch.roll(position, 1, dims=1)
+            prev[:, 0] = 0
+            net_pnl = position * t_ret - (position - prev).abs() * self.bt.cost_rate
+            val_pnl = (torch.cat([net_pnl[:, f['val_start']:f['val_end']] for f in folds], dim=1)
+                       if use_wf else net_pnl[:, split_pt:])
+            # Auxiliary metrics may be positive despite a net loss. Such
+            # candidates may teach the policy, but must never become champions.
+            eligible = bool(torch.isfinite(net_pnl).all() and net_pnl.mean() > 0
+                            and val_pnl.mean() > 0)
             return {
                 'idx': idx, 'status': 'ok',
+                'eligible': eligible, 'net_mean': net_pnl.mean().item(),
+                'validation_net_mean': val_pnl.mean().item(),
                 'reward': reward.item() if isinstance(reward, torch.Tensor) else float(reward),
                 'val_score': val_score_out.item() if isinstance(val_score_out, torch.Tensor) else float(val_score_out),
                 'ic_full': ic_full.item(), 'ic_stab': ic_stab_full.item(),
@@ -466,7 +482,7 @@ class AlphaEngine:
     @staticmethod
     def _compute_ic(factor: torch.Tensor, target_ret: torch.Tensor
                     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """时序 IC（每品种内部 factor[t] vs ret[t+1]）的均值与稳定性。
+        """时序 IC（factor[t] vs 已前移的 target_ret[t]）的均值与稳定性。
 
         对 5 品种宇宙，时序 IC 比横截面 IC 统计意义更强。
         """
@@ -477,8 +493,9 @@ class AlphaEngine:
 
         ic_list = []
         for n in range(N):
-            x  = factor[n, :-1]
-            y  = target_ret[n, 1:]
+            # target_ret[t] already represents open[t+1] -> open[t+2].
+            x  = factor[n]
+            y  = target_ret[n]
             xm = x - x.mean()
             ym = y - y.mean()
             sx = (xm ** 2).mean().sqrt()
@@ -503,17 +520,13 @@ class AlphaEngine:
 
     @staticmethod
     def _apply_ic_gate(reward: torch.Tensor, ic_mean) -> torch.Tensor:
-        """IC 门控：用 IC 符号而非量值调整 reward，完全规避量纲问题。
-        IC > thresh  → reward × IC_GATE_MULT  (正向预测，奖励)
-        IC < -thresh → reward × IC_NEG_MULT   (反向预测，惩罚)
-        |IC| ≤ thresh→ 不修改                  (噪声区)
-        """
+        """Positive IC may boost positive scores; negative IC never improves losses."""
         ic_val = ic_mean.item() if isinstance(ic_mean, torch.Tensor) else float(ic_mean)
         t = ModelConfig.IC_GATE_THRESH
         if ic_val > t:
-            return reward * ModelConfig.IC_GATE_MULT
+            return torch.where(reward > 0, reward * ModelConfig.IC_GATE_MULT, reward)
         elif ic_val < -t:
-            return reward * ModelConfig.IC_NEG_MULT
+            return reward - reward.abs() * (1.0 - ModelConfig.IC_NEG_MULT)
         return reward
 
 
@@ -577,13 +590,15 @@ class AlphaEngine:
         reward: torch.Tensor,
         factor: torch.Tensor,
         train_slice: tuple[int, int] | None = None,
+        pool_snapshot: list | None = None,
     ) -> torch.Tensor:
         """相关性惩罚：与因子池中已有因子的相关性超过阈值则惩罚 reward。
 
         P1-6 修复：相关性只在 train 切片上计算，避免含 val 段数据泄漏。
         train_slice=None 时回退到整段（向后兼容）。
         """
-        if not self.factor_pool:
+        pool = self.factor_pool if pool_snapshot is None else pool_snapshot
+        if not pool:
             return reward
         # P1-6: 相关性只在 train 切片上计算，避免 val 信息泄漏
         if train_slice is not None:
@@ -596,7 +611,9 @@ class AlphaEngine:
             return reward
         # 因子池中的历史因子也按相同切片取（若形状一致）
         pool_vecs_list = []
-        for _, _cnt, pf in self.factor_pool:
+        for _, _cnt, pf in pool:
+            if pf.shape != factor.shape:
+                continue
             pf_t = pf.detach()
             if train_slice is not None and pf_t.shape[1] >= factor.shape[1]:
                 pf_t = pf_t[:, s:e]
@@ -611,7 +628,7 @@ class AlphaEngine:
         sy   = p_c.norm(dim=1) + 1e-8
         corr = (cov / (sx * sy)).abs()
         if (corr > ModelConfig.CORR_THRESHOLD).any():
-            reward = reward * ModelConfig.CORR_PENALTY
+            reward = reward - reward.abs() * (1.0 - ModelConfig.CORR_PENALTY)
         return reward
 
     def _distribution_stats(self, prev_dist=None):
@@ -681,9 +698,8 @@ class AlphaEngine:
         T     = self.data_manager.target_ret.shape[1]
         folds = _build_walk_forward_folds(T, self.n_folds,
                                           gap=getattr(ModelConfig, 'WF_GAP', 20))
-        use_wf = len(folds) > 1 and not (
-            folds[0]["train_start"] == 0 and folds[0]["train_end"] == T
-        )
+        # Even a single short-data fold must retain its reserved purge gap.
+        use_wf = bool(folds)
         if verbose_header:
             if use_wf:
                 print(f"   滚动验证: {len(folds)} 折  共 {T} 根K线")
@@ -917,7 +933,7 @@ class AlphaEngine:
                 if final_val > step_max_val:
                     step_max_val = final_val; step_best_f = fml
 
-                if final_val > self.best_score:
+                if r['eligible'] and math.isfinite(final_val) and final_val > self.best_score:
                     # OOS 泛化门控：val_score / train_score < 0.5 说明过拟合
                     train_val = r['reward']
                     if train_val > 0.5 and final_val < train_val * 0.5:
@@ -997,14 +1013,13 @@ class AlphaEngine:
             ent_coeff = ModelConfig.ENTROPY_COEFF_MAX / (
                 (1.0 + ent_val) ** ModelConfig.ENTROPY_COEFF_POWER
             )
-            # Fix 1: 熵下限惩罚——当 H < threshold 时加入固定惩罚，确保探索压力不归零
-            ent_floor_loss = torch.zeros(1, device=ModelConfig.DEVICE)
+            loss = policy_loss - ent_coeff * mean_ent
+            # 熵下限：把 floor_gap 变成对 mean_ent 的真实梯度惩罚，
+            # 低于阈值时对 H 产生持续向上的推力，而不是加一个常数项。
             if ModelConfig.ENTROPY_FLOOR and ent_val < ModelConfig.ENTROPY_FLOOR_THRESH:
-                floor_gap = ModelConfig.ENTROPY_FLOOR_THRESH - ent_val
-                ent_floor_loss = ModelConfig.ENTROPY_FLOOR_LAMBDA * torch.tensor(
-                    floor_gap, device=ModelConfig.DEVICE, dtype=mean_ent.dtype
+                loss = loss + ModelConfig.ENTROPY_FLOOR_LAMBDA * (
+                    ModelConfig.ENTROPY_FLOOR_THRESH - mean_ent
                 )
-            loss = policy_loss - ent_coeff * mean_ent + ent_floor_loss
 
             self.opt.zero_grad()
             loss.backward()
@@ -1078,20 +1093,7 @@ class AlphaEngine:
             self.training_history.setdefault('batch_fml_div', []).append(fml_div)
 
             if self.best_formula is not None and self.target_symbol:
-                from .vocab import VOCAB_VERSION
-                strategy_data = {
-                    "vocab_version": VOCAB_VERSION,
-                    "symbol": self.target_symbol,
-                    "timeframe": self.timeframe,
-                    "data_file": self.data_file,
-                    "mode": self.mode,
-                    "formula": self.best_formula,
-                    "best_score": self.best_score,
-                }
-                save_path = _strategy_file_for_symbol(self.target_symbol, self.timeframe)
-                pathlib.Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-                with open(save_path, "w") as fp:
-                    json.dump(strategy_data, fp, indent=2)
+                self._save_strategy_live()
 
             self._save_training_history_live()
 
@@ -1255,23 +1257,7 @@ class AlphaEngine:
         # target_symbol，策略由 IslandAlphaEngine 统一保存
         if end_step == ModelConfig.TRAIN_STEPS and self.target_symbol:
             if self.best_formula is not None:
-                from .vocab import VOCAB_VERSION
-                strategy_data = {
-                    "vocab_version": VOCAB_VERSION,
-                    "symbol": self.target_symbol,
-                    "timeframe": self.timeframe,
-                    "data_file": self.data_file,
-                    "mode": self.mode,
-                    "formula": self.best_formula,
-                    "best_score": self.best_score,
-                }
-                save_path = _strategy_file_for_symbol(self.target_symbol, self.timeframe)
-                pathlib.Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-                # P1-3: 原子写入
-                tmp_path = save_path + ".tmp"
-                with open(tmp_path, "w", encoding="utf-8") as fp:
-                    json.dump(strategy_data, fp, indent=2, ensure_ascii=False)
-                os.replace(tmp_path, save_path)
+                self._save_strategy_live()
 
             sym_tag = f"[{self.target_symbol}] " if self.target_symbol else ""
             self.training_history.pop('_low_entropy_streak', None)
@@ -1294,7 +1280,7 @@ class AlphaEngine:
             print(f"  自适应噪声   : 启用={ModelConfig.ADAPTIVE_NOISE}，范围=[{ModelConfig.NOISE_MIN}, {ModelConfig.NOISE_MAX}]")
             print(f"  部分层重置   : 启用={ModelConfig.PARTIAL_RESET}，层={ModelConfig.PARTIAL_RESET_LAYERS}")
             print(f"  重启次数     : {self._restart_count}")
-            print(f"  策略已保存   : {save_path}")
+            print(f"  策略目标路径 : {_strategy_file_for_symbol(self.target_symbol, self.timeframe)}（旧口径文件受保护）")
 
 
     # ── 实时保存最优公式（防进程意外退出丢失）────────────────────────────────
@@ -1339,6 +1325,11 @@ class AlphaEngine:
         try:
             from .vocab import VOCAB_VERSION
             save_path = _strategy_file_for_symbol(self.target_symbol, self.timeframe)
+            if not _strategy_write_allowed(save_path):
+                if not getattr(self, '_legacy_strategy_warned', False):
+                    tqdm.write(f"[评分隔离] 保留旧口径策略 {save_path}；新结果在检查点中，部署前需另存并独立验收。")
+                    self._legacy_strategy_warned = True
+                return
             pathlib.Path(save_path).parent.mkdir(parents=True, exist_ok=True)
 
             existing: dict = {}
@@ -1352,6 +1343,7 @@ class AlphaEngine:
                     existing = {}
 
             strategy_data = {
+                "scoring_version": SCORING_VERSION,
                 "vocab_version": VOCAB_VERSION,
                 "symbol": self.target_symbol,
                 "timeframe": self.timeframe,
@@ -1393,6 +1385,7 @@ class AlphaEngine:
         """返回可供单引擎和岛模式复用的完整续训状态。"""
         return {
             "step":                 step,
+            "scoring_version":      SCORING_VERSION,
             "vocab_version":        VOCAB_VERSION,
             "model_state_dict":     self.model.state_dict(),
             "optimizer_state_dict": self.opt.state_dict(),
@@ -1444,6 +1437,21 @@ class AlphaEngine:
         self._reward_ema_step = ckpt.get("reward_ema_step", 0)
         for k, v in ckpt.get("training_history", {}).items():
             self.training_history[k] = v
+        if ckpt.get("scoring_version") != SCORING_VERSION:
+            # Keep learned parameters, optimizer, completed steps and hard-stop
+            # counters. Old objective rankings must not block new champions or
+            # bias elite replay. Never rewrite the source checkpoint here.
+            self.best_score = -float('inf')
+            self.best_formula = None
+            self._best_snapshot = None
+            self.factor_pool = []
+            self._factor_pool_counter = 0
+            self._elite_pool = []
+            self._elite_counter = 0
+            self._reward_ema = None
+            self._reward_ema_step = 0
+            self.training_history = {k: [] for k in self.training_history}
+            print(f"[评分隔离] 旧检查点排名/精英/EMA已清空；权重、步数及停止状态保留。新口径={SCORING_VERSION}")
         return int(ckpt.get("step", 0))
 
     def save_checkpoint(self, step: int, path: str | None = None) -> str:

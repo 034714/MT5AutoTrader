@@ -94,3 +94,37 @@ def group_history_deals(deals, magic: int | None = None) -> dict[str, list[dict]
     closed.sort(key=lambda r: r["close_time"] or 0, reverse=True)
     open_list.sort(key=lambda r: r["open_time"], reverse=True)
     return {"closed": closed, "open": open_list}
+
+
+def latest_full_close_time(deals, symbol: str, magic: int | None = None) -> int | None:
+    """从成交记录里找该品种最近一次「完全平仓」的成交时间（服务器伪时间戳）。
+
+    与 group_history_deals 同口径：出场量 >= 入场量才算全平。用于外部
+    （服务器止损/止盈、手动平仓）触发的再入场冷却对账。
+    """
+    symbol = str(symbol)
+    groups: dict[int, list] = {}
+    for d in deals or []:
+        groups.setdefault(int(getattr(d, "position_id", 0) or 0), []).append(d)
+    latest: int | None = None
+    for pid, ds in groups.items():
+        if pid == 0:
+            continue
+        syms = {str(getattr(d, "symbol", "") or "") for d in ds}
+        if symbol not in syms:
+            continue
+        entries = [d for d in ds
+                   if int(getattr(d, "entry", -1)) in (DEAL_ENTRY_IN, DEAL_ENTRY_INOUT)]
+        exits = [d for d in ds
+                 if int(getattr(d, "entry", -1)) in (DEAL_ENTRY_OUT, DEAL_ENTRY_OUT_BY)]
+        if not entries or not exits:
+            continue
+        if magic is not None and not any(int(getattr(d, "magic", 0)) == magic
+                                         for d in entries):
+            continue
+        if sum(float(d.volume) for d in exits) < sum(float(d.volume) for d in entries) - 1e-9:
+            continue  # 部分平仓不算全平
+        t = max(int(getattr(d, "time", 0) or 0) for d in exits)
+        if latest is None or t > latest:
+            latest = t
+    return latest

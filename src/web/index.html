@@ -9,6 +9,7 @@
     --bg: #0f1419; --panel: #1a2129; --panel2: #222b36; --border: #2d3948;
     --text: #d8e1ea; --muted: #8a98a8; --accent: #4da3ff; --green: #2ecc71;
     --red: #e74c3c; --yellow: #f1c40f; --orange: #e67e22;
+    --accent-rgb: 77,163,255; --accent-ink: #071421;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: var(--bg); color: var(--text); font: 14px/1.6 "Microsoft YaHei", "Segoe UI", sans-serif; }
@@ -51,7 +52,7 @@
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
   th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--border); }
   th { color: var(--muted); font-weight: normal; }
-  tr:hover td { background: rgba(77,163,255,.05); }
+  tr:hover td { background: rgba(var(--accent-rgb),.05); }
   pre.log { background: #0a0e12; border: 1px solid var(--border); border-radius: 6px; padding: 10px; font: 12px/1.5 Consolas, monospace; max-height: 420px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
   pre.log .lv-INFO { color: #cfd8e3; }
   pre.log .lv-SUCCESS { color: #4fd08a; }
@@ -62,7 +63,7 @@
   .msg.ok { display: block; background: rgba(46,204,113,.12); color: var(--green); }
   .msg.err { display: block; background: rgba(231,76,60,.12); color: var(--red); }
   .hint { color: var(--muted); font-size: 12px; }
-  .section-note { background: rgba(77,163,255,.08); border-left: 3px solid var(--accent); color: var(--text); padding: 9px 12px; border-radius: 4px; margin: 0 0 14px; font-size: 13px; }
+  .section-note { background: rgba(var(--accent-rgb),.08); border-left: 3px solid var(--accent); color: var(--text); padding: 9px 12px; border-radius: 4px; margin: 0 0 14px; font-size: 13px; }
   .step { display: flex; gap: 10px; align-items: flex-start; padding: 12px 0; border-bottom: 1px solid var(--border); }
   .step:last-child { border-bottom: none; }
   .step-num { flex: 0 0 26px; height: 26px; border-radius: 50%; background: var(--accent); color: #071421; font-weight: 700; text-align: center; line-height: 26px; }
@@ -90,28 +91,40 @@
   #overlay .box h3 { margin-bottom: 10px; }
   #overlay .box p { margin-bottom: 16px; }
   .charts img { max-width: 100%; border: 1px solid var(--border); border-radius: 6px; margin: 8px 0; }
+  #qb-dialog { width: min(960px, calc(100vw - 24px)); max-height: 90vh; margin: auto; padding: 0; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 12px; overflow: auto; }
+  #qb-dialog::backdrop { background: rgba(0,0,0,.65); }
+  #qb-dialog .card { border: 0; margin: 0; box-shadow: none; }
+  #qb-dialog h3 { margin: 0; }
+  #qb-dialog .qb-header { justify-content: space-between; margin-bottom: 12px; }
+  #qb-dialog .qb-wrap { overflow-wrap: anywhere; }
+  #qb-dialog .stat .v { overflow-wrap: anywhere; }
+  #qb-chart { display: block; width: 100%; height: 300px; margin: 10px 0 4px; background: var(--panel2); border: 1px solid var(--border); border-radius: 6px; }
+  #qb-progress { width: 100%; height: 10px; accent-color: var(--accent); }
+  #qb-notes { padding-left: 20px; margin: 8px 0; }
+  #qb-error { white-space: pre-wrap; overflow-wrap: anywhere; }
+  @media (max-width: 600px) { #qb-dialog .card { padding: 12px; } #qb-chart { height: 280px; } }
   .spin { display: inline-block; animation: spin 1s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
   /* ═══ 界面美化覆盖层（2026-09-13）：仅覆盖上面同优先级规则 ═══ */
-  body { background: radial-gradient(1200px 500px at 20% -10%, rgba(77,163,255,.08), transparent 60%),
+  body { background: radial-gradient(1200px 500px at 20% -10%, rgba(var(--accent-rgb),.08), transparent 60%),
                     radial-gradient(1000px 400px at 100% 0%, rgba(46,204,113,.05), transparent 55%), var(--bg); }
-  header { background: linear-gradient(180deg, rgba(23,29,38,.98), rgba(19,24,31,.98)); box-shadow: 0 1px 0 rgba(77,163,255,.12); }
+  header { background: linear-gradient(180deg, rgba(23,29,38,.98), rgba(19,24,31,.98)); box-shadow: 0 1px 0 rgba(var(--accent-rgb),.12); }
   header h1 { letter-spacing: .5px; }
   nav { padding-top: 4px; gap: 2px; }
   nav button { border-radius: 8px 8px 0 0; padding: 9px 18px; font-size: 13.5px; transition: background .15s, color .15s; }
-  nav button:hover { background: rgba(77,163,255,.08); }
-  nav button.active { background: rgba(77,163,255,.10); font-weight: 600; }
+  nav button:hover { background: rgba(var(--accent-rgb),.08); }
+  nav button.active { background: rgba(var(--accent-rgb),.10); font-weight: 600; }
   main { padding: 22px; }
   .card { border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,.25); transition: border-color .15s; }
-  .card:hover { border-color: rgba(77,163,255,.35); }
+  .card:hover { border-color: rgba(var(--accent-rgb),.35); }
   .card h3 { display: flex; align-items: center; gap: 8px; font-size: 13.5px; letter-spacing: .5px; }
-  .card h3::before { content: ""; width: 3px; height: 14px; border-radius: 2px; background: linear-gradient(180deg, var(--accent), rgba(77,163,255,.35)); }
+  .card h3::before { content: ""; width: 3px; height: 14px; border-radius: 2px; background: linear-gradient(180deg, var(--accent), rgba(var(--accent-rgb),.35)); }
   button.btn { border-radius: 7px; font-weight: 600; transition: filter .12s, transform .06s; box-shadow: 0 1px 4px rgba(0,0,0,.3); }
   button.btn:active { transform: translateY(1px); }
   button.btn.ghost { box-shadow: none; }
   button.btn.ghost:hover { border-color: var(--accent); color: var(--accent); }
   input, select { border-radius: 7px; transition: border-color .12s, box-shadow .12s; }
-  input:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(77,163,255,.18); }
+  input:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(var(--accent-rgb),.18); }
   th { font-size: 12px; text-transform: uppercase; letter-spacing: .5px; }
   tbody tr { transition: background .1s; }
   .progress-wrap { height: 8px; border-radius: 4px; }
@@ -159,6 +172,27 @@
   html.ui-glass .card, html.ui-glass tbody tr { transition: none; }
   html.ui-glass pre.log { background: rgba(7,10,14,.6); }
   html.ui-glass input, html.ui-glass select, html.ui-glass .stat { background: rgba(34,43,54,.72); }
+  /* 材质仅由 CSS 模拟：Mica 风格不使用系统桌面采样，也不需要实时模糊。 */
+  html.ui-mica header, html.ui-mica nav, html.ui-mica .card, html.ui-mica #overlay .box {
+    background: linear-gradient(135deg, rgba(var(--accent-rgb),.12), transparent 70%), #1a2129;
+    backdrop-filter: none; -webkit-backdrop-filter: none;
+  }
+  html.ui-solid header, html.ui-solid nav, html.ui-solid .card, html.ui-solid #overlay .box {
+    background: var(--panel); backdrop-filter: none; -webkit-backdrop-filter: none;
+  }
+  @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    html.ui-glass header, html.ui-glass nav, html.ui-glass .card, html.ui-glass #overlay .box { background: var(--panel); }
+  }
+  button.btn:not(.danger):not(.green):not(.ghost), .step-num { color: var(--accent-ink); }
+  .progress-bar { background: linear-gradient(90deg, var(--green), var(--accent)); }
+  input[type=color] { width: 64px; height: 34px; padding: 3px; cursor: pointer; }
+  input[type=checkbox], input[type=range] { accent-color: var(--accent); }
+  html.ui-paused *, html.ui-paused *::before, html.ui-paused *::after {
+    animation-play-state: paused !important; transition: none !important;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+  }
   .stat-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
   .stat { flex: 1 1 150px; background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
   .stat .v { font-size: 17px; font-weight: 700; }
@@ -166,14 +200,33 @@
   #eq-legend .ldot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin: 0 4px 0 10px; vertical-align: middle; }
 </style>
 <script>
-/* 外观偏好尽早应用，避免刷新时先闪一下默认样式 */
+/* 外观偏好尽早应用，避免刷新时先闪一下默认样式。旧 glass 布尔值继续兼容。 */
+function uiMaterial(p) {
+  return ["solid", "mica", "glass"].includes(p.material) ? p.material : (p.glass ? "glass" : "solid");
+}
+function uiAccent(v) { return /^#[0-9a-f]{6}$/i.test(v || "") ? v.toLowerCase() : "#4da3ff"; }
+function applyAccent(v) {
+  const color = uiAccent(v), el = document.documentElement;
+  const rgb = [1, 3, 5].map(i => parseInt(color.slice(i, i + 2), 16));
+  const linear = rgb.map(v => { v /= 255; return v <= .04045 ? v / 12.92 : Math.pow((v + .055) / 1.055, 2.4); });
+  const luminance = linear[0] * .2126 + linear[1] * .7152 + linear[2] * .0722;
+  el.style.setProperty("--accent", color);
+  el.style.setProperty("--accent-rgb", rgb.join(","));
+  el.style.setProperty("--accent-ink", luminance > .179 ? "#000000" : "#ffffff");
+}
+function applyMaterial(v) {
+  const el = document.documentElement;
+  ["solid", "mica", "glass"].forEach(m => el.classList.toggle("ui-" + m, v === m));
+}
 (function () {
   try {
     var p = JSON.parse(localStorage.getItem("mt5.ui") || "{}");
     var el = document.documentElement;
     if (p.nav === "left") el.classList.add("ui-nav-left");
     if (p.navMin) el.classList.add("ui-nav-min");
-    if (p.glass) el.classList.add("ui-glass");
+    applyMaterial(uiMaterial(p));
+    applyAccent(p.accent);
+    el.classList.toggle("ui-paused", document.hidden);
     if (p.blur != null) el.style.setProperty("--ui-blur", p.blur + "px");
     if (p.bg) {
       var s = document.createElement("style");
@@ -202,7 +255,6 @@
   <button data-tab="chart" data-short="图">图表分析</button>
   <button data-tab="strategies" data-short="策">策略库</button>
   <button data-tab="training" data-short="训">训练</button>
-  <button data-tab="backtest" data-short="回">回测</button>
   <button data-tab="control" data-short="交">交易控制</button>
   <button data-tab="risk" data-short="风">风控参数</button>
   <button data-tab="history" data-short="历">历史成交</button>
@@ -337,7 +389,7 @@
         <div class="card">
           <h3>绑定策略 → MT5 品种</h3>
           <div class="row"><label>策略</label><select id="bind-strategy" style="min-width:260px"></select></div>
-          <div class="row"><label>MT5 品种</label><input type="text" id="bind-symbol" placeholder="例如 ETHUSD_（注意下划线）">
+          <div class="row"><label>MT5 品种</label><input type="text" id="bind-symbol" list="mt5-symbol-list" autocomplete="off" placeholder="例如 ETHUSD_（注意下划线）">
             <button class="btn small ghost" onclick="loadSymbols()">拉取可选品种</button></div>
           <div id="symbol-sugg" class="hint"></div>
           <div class="row"><label>手数</label><input type="number" id="bind-lot" value="0.1" step="0.01" min="0.01"></div>
@@ -400,7 +452,7 @@
         </div>
         <div class="card" style="background:var(--panel2);margin-top:12px">
           <h3>从 MT5 获取并训练</h3>
-          <div class="row"><label>品种</label><input type="text" id="mt5-symbol" placeholder="ETHUSD_" value="ETHUSD_">
+          <div class="row"><label>品种</label><input type="text" id="mt5-symbol" list="mt5-symbol-list" autocomplete="off" placeholder="ETHUSD_" value="ETHUSD_">
             <label>周期</label><select id="mt5-tf">
               <option>M5</option><option>M15</option><option>M30</option>
               <option selected>H1</option><option>H4</option><option>D1</option>
@@ -430,28 +482,6 @@
         <h3 style="margin-top:14px">实时日志</h3>
         <pre class="log" id="tr-log" style="margin-top:8px">暂无日志</pre>
       </div>
-    </div>
-  </section>
-
-  <!-- ═══ 回测 ═══ -->
-  <section id="tab-backtest" class="tab">
-    <div class="card" style="margin-bottom:14px">
-      <h3>运行回测</h3>
-      <div class="row"><label>策略</label><select id="bt-strategy" style="min-width:260px"></select></div>
-      <div class="row"><label>数据文件</label><select id="bt-file" style="min-width:320px"></select>
-        <span class="hint">留空则用策略内记录的数据</span></div>
-      <div class="row"><label>手续费%</label><input type="number" id="bt-commission" value="0.08" step="0.01" min="0">
-        <label>滑点%</label><input type="number" id="bt-slippage" value="0.05" step="0.01" min="0"></div>
-      <div class="row"><button class="btn green" onclick="startBacktest()">开始回测</button>
-        <button class="btn danger" onclick="stopBacktest()">停止</button>
-        <button class="btn ghost" onclick="loadBacktestReport(true)">刷新报告</button></div>
-      <div id="bt-msg" class="msg"></div>
-      <pre class="log" id="bt-log" style="margin-top:8px">暂无日志</pre>
-    </div>
-    <div class="card">
-      <h3>回测报告</h3>
-      <div id="bt-report" class="hint">暂无报告</div>
-      <div class="charts" id="bt-charts"></div>
     </div>
   </section>
 
@@ -507,7 +537,9 @@
           <span class="hint">5~10 秒</span></div>
         <div class="row"><label>初始止损%</label><input type="number" id="rk-sl" step="0.005" min="0.005">
           <span class="hint">填正数，如 2 表示 -2%</span></div>
-        <div class="row"><button class="btn" onclick="saveRisk()">保存风控参数</button></div>
+        <div class="row"><label for="rk-reentry-cooldown">平仓后冷却(秒)</label><input type="number" id="rk-reentry-cooldown" value="60" min="0" step="1" aria-describedby="rk-reentry-help"></div>
+        <div id="rk-reentry-help" class="hint">默认 60 秒，0 表示关闭冷却。同一品种的持仓全部平仓后，Runner 暂停该品种所有方向（做多和做空）的策略重新开仓；部分平仓不算全平。手动下单不受此冷却限制，已有持仓的止损和风控仍保留。冷却结束后，策略仍可能重新开仓；要彻底停止该品种交易请解绑策略。</div>
+        <div class="row"><button class="btn" id="rk-save" onclick="saveRisk()">保存风控参数</button></div>
         <div id="rk-msg" class="msg"></div>
         <div class="hint" style="margin-top:8px">
           规则：开仓即设初始止损；浮盈达到档位触发值后止损上移到锁定价；
@@ -645,18 +677,74 @@
             <option value="left">左侧（竖向菜单）</option>
           </select></div>
         <div class="hint" style="margin:0 0 6px">选左侧时侧栏是通天整条，底部有「收起侧栏」按钮可缩成窄条（只显示每个页签的首字）。</div>
-        <div class="row"><label>玻璃质感</label>
-          <label class="hint" style="min-width:0"><input type="checkbox" id="ui-glass"> 顶栏和卡片变成半透明毛玻璃（配背景图片更好看）</label></div>
+        <div class="row"><label for="ui-accent-preset">主题强调色</label>
+          <select id="ui-accent-preset">
+            <option value="#4da3ff">海蓝（默认）</option><option value="#a78bfa">鸢尾紫</option>
+            <option value="#2dd4bf">青绿</option><option value="#fbbf24">琥珀</option>
+            <option value="#f472b6">玫瑰</option><option value="custom">自定义</option>
+          </select>
+          <input type="color" id="ui-accent" value="#4da3ff" aria-label="自定义主题强调色">
+          <span id="ui-accent-val" class="hint">#4da3ff</span></div>
+        <div class="hint">强调色用于标题、导航、按钮及焦点；盈亏、买卖与止损止盈的语义颜色保持不变。深色背景下建议选择明亮颜色。</div>
+        <div class="row"><label for="ui-material">界面材质</label>
+          <select id="ui-material">
+            <option value="solid">纯色（低开销）</option>
+            <option value="mica">Mica 风格（CSS 静态模拟）</option>
+            <option value="glass">磨砂玻璃（半透明模糊）</option>
+          </select></div>
+        <div class="hint">Mica 风格是网页内的着色渐变模拟，并非 Windows 原生 Mica，不会采样桌面壁纸。磨砂玻璃只模糊网页背后的内容；不支持模糊的浏览器自动退回纯色。</div>
         <div class="row"><label>毛玻璃模糊</label>
           <input type="range" id="ui-blur" min="0" max="30" step="2" style="width:180px;min-width:0">
           <span id="ui-blur-val" class="hint">14px</span></div>
-        <div class="hint">模糊强度只在勾选「玻璃质感」后生效；调到 0 就是只透明不模糊。</div>
+        <div class="hint">模糊强度只在「磨砂玻璃」材质下生效；0 表示透明但不模糊，切换材质会保留此数值。</div>
         <div class="hint">以上设置会自动保存，只对这台电脑的这个浏览器生效，换浏览器或换电脑需要重新设置。</div>
+        <div id="ap-style-msg" class="msg" role="status"></div>
+        <h3 style="margin-top:14px">后台负载说明</h3>
+        <div id="ui-load-help" class="hint">颜色和材质只影响浏览器显示，不增加 Runner 的策略计算；磨砂玻璃会增加浏览器 GPU 合成开销，低配设备建议纯色或 Mica 风格。页面隐藏或最小化后自动暂停界面轮询、图表绘制和装饰动画，已发出的请求可能完成；返回可见时立即刷新状态和当前页数据（图表/日志关闭自动刷新时保留手动控制）。隐藏期间本页面不再请求净值采样，因此可能留下采样空档。<strong>这不是停止交易：Runner、实时风控、训练和回测仍在独立后台运行，CPU 负载可能仍高；尤其多岛训练通常更耗时。要停止请使用对应的停止按钮。</strong></div>
       </div>
     </div>
   </section>
 </main>
 </div>
+
+<dialog id="qb-dialog" aria-labelledby="qb-title" aria-describedby="qb-safety">
+  <div class="card">
+    <div class="row qb-header"><h3 id="qb-title">MT5 最新已收盘 K 线回测</h3><button type="button" class="btn ghost" id="qb-close" onclick="closeQuickBacktest()">关闭</button></div>
+    <div id="qb-strategy" class="qb-wrap"></div>
+    <div id="qb-context" class="hint qb-wrap"></div>
+    <div class="section-note" id="qb-safety" style="margin-top:12px">只读取 MT5 历史行情并模拟计算，不发送订单、不修改交易配置。只使用已收盘 K 线，不包含当前形成中的 K 线；历史表现不保证未来收益。</div>
+    <form id="qb-form">
+      <div class="row"><label for="qb-symbol">回测品种</label><input type="text" id="qb-symbol" list="mt5-symbol-list" autocomplete="off" required aria-describedby="qb-symbol-note" oninput="quickBacktestSymbolEdited()"><button type="button" class="btn small ghost" onclick="requestQuickBacktestOptions()">读取此品种参数</button></div>
+      <div id="qb-symbol-note" class="field-help">正在读取策略记录品种与当前 MT5 可选品种…</div>
+      <div class="row"><label for="qb-bars">最近已收盘根数</label><input type="number" id="qb-bars" step="1" required disabled aria-describedby="qb-bars-help"></div>
+      <div id="qb-bars-help" class="field-help">正在读取允许范围…</div>
+      <div class="row"><label for="qb-lot">模拟固定手数</label><input type="number" id="qb-lot" step="any" required disabled aria-describedby="qb-lot-help"></div>
+      <div id="qb-lot-help" class="field-help">从当前配置读取默认手数，不自动猜测。</div>
+      <div class="row"><label for="qb-slip">滑点假设（点）</label><input type="number" id="qb-slip" value="0" step="any" min="0" max="10000" aria-describedby="qb-cost-help">
+        <label for="qb-comm">每手单边佣金</label><input type="number" id="qb-comm" value="0" step="any" min="0" max="100000" aria-describedby="qb-cost-help"></div>
+      <div id="qb-cost-help" class="field-help">默认均为 0：即假设无滑点、无佣金。这只是模拟假设，不是券商实收费用；隔夜费（swap）按 0 计算。修改后重新运行即可对比成本影响。</div>
+      <div class="row"><button type="submit" class="btn green" id="qb-run" disabled>运行回测（不下单）</button><button type="button" class="btn ghost" id="qb-retry" onclick="requestQuickBacktestOptions()" hidden>重试读取参数</button></div>
+    </form>
+    <div id="qb-status" class="hint" role="status" aria-live="polite"></div>
+    <progress id="qb-progress" aria-label="回测处理中，暂无百分比进度" hidden></progress>
+    <div class="hint">关闭窗口不会取消已提交的回测；当前页面内再次点策略「回测」可查看正在执行的任务。刷新或离开页面后无法恢复本次结果。</div>
+    <div id="qb-error" class="msg" role="alert"></div>
+    <div id="qb-result" hidden>
+      <div id="qb-result-meta" class="hint qb-wrap" style="margin-top:12px"></div>
+      <div class="stat-row">
+        <div class="stat"><div class="v" id="qb-profit">—</div><div class="k">模拟盈亏（账户货币）</div></div>
+        <div class="stat"><div class="v" id="qb-drawdown">—</div><div class="k">最大回撤（账户货币）</div></div>
+        <div class="stat"><div class="v" id="qb-trades">—</div><div class="k">已平仓交易数</div></div>
+        <div class="stat"><div class="v" id="qb-winrate">—</div><div class="k">胜率</div></div>
+      </div>
+      <h4 style="margin-top:14px" id="qb-chart-title">模拟权益曲线</h4>
+      <canvas id="qb-chart" width="900" height="300" role="img" aria-label="模拟权益曲线；数值范围自动缩放">权益曲线需要支持 Canvas 的浏览器。</canvas>
+      <div id="qb-chart-help" class="hint"></div>
+    </div>
+    <h4 style="margin-top:12px">成本口径与限制</h4>
+    <ul id="qb-notes" class="hint"><li>正在读取后端的费用与模拟规则；结果并非实盘成交记录。</li></ul>
+  </div>
+</dialog>
 
 <div id="overlay">
   <div class="box">
@@ -723,7 +811,7 @@ function drawLineChart(canvas, points, opts) {
   drawSeriesChart(canvas, [{ points, color: (opts && opts.color) || "#2ecc71" }], opts);
 }
 function drawSeriesChart(canvas, series, opts) {
-  if (!canvas) return;
+  if (document.hidden || !canvas || !(canvas.closest(".tab.active") || canvas.closest("dialog[open]"))) return;
   const ctx = canvas.getContext("2d");
   const dpr = window.devicePixelRatio || 1;
   // 高度只认 CSS（style 固定 px），否则 canvas.height 会被 dpr 逐帧放大导致图越拉越长
@@ -750,7 +838,7 @@ function drawSeriesChart(canvas, series, opts) {
   const pad = (hi - lo) * 0.12; lo -= pad; hi += pad;
   const xs = allPts.map(p => p[0]);
   const x0 = Math.min.apply(null, xs), x1 = Math.max.apply(null, xs);
-  const padL = 48, padB = 24, padR = 16, padT = 12;
+  const padL = (opts && opts.padL) || 48, padB = 24, padR = 16, padT = 12;
   const px = t => padL + (t - x0) / ((x1 - x0) || 1) * (w - padL - padR);
   const py = v => padT + (1 - (v - lo) / (hi - lo)) * (h - padT - padB);
   // 网格与 Y 轴刻度
@@ -876,7 +964,6 @@ document.querySelectorAll("nav button[data-tab]").forEach(btn => {
     $("tab-" + btn.dataset.tab).classList.add("active");
     if (btn.dataset.tab === "strategies") loadStrategies();
     if (btn.dataset.tab === "training") { loadDataFiles(); pollTraining(); }
-    if (btn.dataset.tab === "backtest") { loadDataFiles(); loadStrategyDropdowns(); pollBacktest(); loadBacktestReport(); }
     if (btn.dataset.tab === "chart") { loadSRChart(true); loadPendingList(); }
     if (btn.dataset.tab === "history") { loadHistory(); loadEquityChart(); }
     if (btn.dataset.tab === "logs") loadLogView();
@@ -885,7 +972,25 @@ document.querySelectorAll("nav button[data-tab]").forEach(btn => {
 
 // ── 总览轮询 ──────────────────────────────────────────────
 let lastStatus = null;
+let equityAccountKey = null;
+let equityRequestId = 0;
+function accountKey(account) {
+  if (!account || account.login == null) return null;
+  return [String(account.server || ""), String(account.login), String(account.currency || "")].join("\u001f");
+}
+function clearEquityChart(message) {
+  const canvas = $("eq-chart");
+  if (canvas) {
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+  }
+  const legend = $("eq-legend");
+  if (legend) legend.innerHTML = "";
+  const meta = $("eq-chart-meta");
+  if (meta) meta.textContent = message;
+}
 async function refreshStatus() {
+  if (document.hidden) return;
   let st;
   try { st = await api("/api/status"); }
   catch (e) {
@@ -893,6 +998,15 @@ async function refreshStatus() {
     return;
   }
   lastStatus = st;
+  const nextAccountKey = accountKey(st.account);
+  if (nextAccountKey !== equityAccountKey) {
+    equityAccountKey = nextAccountKey;
+    invalidateMt5Symbols();
+    if (nextAccountKey) ensureMt5Symbols();
+    equityRequestId += 1;  // 让旧账户在途响应失效，绝不覆盖新账户图表
+    clearEquityChart(nextAccountKey ? "账户已切换，正在读取此账户的历史曲线…" : "MT5 未连接，暂无历史曲线。");
+    if (nextAccountKey && document.querySelector("nav button.active")?.dataset.tab === "history") loadEquityChart();
+  }
   window.__srvOff = st.server_offset_sec != null ? st.server_offset_sec
     : (st.runner_status && st.runner_status.server_offset_sec) || 0;
   const runnerOn = st.runner_alive;
@@ -1030,7 +1144,7 @@ async function loadStrategies() {
     const err = s.error ? "<div class='hint' style='color:var(--red)'>" + esc(s.error) + "</div>" : "";
     return "<tr><td>" + esc(s.name) + "</td><td>" + esc(s.symbol) + "</td><td>" + esc(s.timeframe) +
       "</td><td>" + score + "</td><td class='hint' style='max-width:280px;word-break:break-all'>" + esc(s.formula_decoded || "") + "</td>" +
-      "<td><button class='btn small ghost' onclick=\"quickBacktest('" + esc(s.file).replace(/\\/g, "\\\\") + "')\">回测</button> " +
+      "<td><button class='btn small ghost' data-file='" + esc(s.file) + "' data-symbol='" + esc(s.symbol) + "' onclick=\"quickBacktest(this.dataset.file, this.dataset.symbol)\">回测</button> " +
       "<button class='btn small danger' onclick=\"delStrategy('" + esc(s.name) + "')\">删除</button></td></tr>" + err;
   }).join("");
   $("st-list").innerHTML = data.strategies.length
@@ -1049,15 +1163,235 @@ async function loadStrategyDropdowns() {
     const opts = data.strategies.filter(s => !s.error)
       .map(s => "<option value='" + esc(s.file) + "'>" + esc(s.name) + " (" + (s.best_score != null ? s.best_score.toFixed(3) : "?") + ")</option>").join("");
     $("bind-strategy").innerHTML = opts || "<option value=''>（无可用策略）</option>";
-    $("bt-strategy").innerHTML = opts || "<option value=''>（无可用策略）</option>";
   } catch (e) { /* 下拉刷新失败忽略 */ }
 }
-function quickBacktest(file) {
-  const btn = document.querySelector('button[data-tab=backtest]');
-  if (btn) btn.click();
-  $("bt-strategy").value = file;
-  showMsg("bt-msg", "已选策略 " + fileName(file) + "，确认范围后点「开始回测」", true);
+// 独立于离线 JobManager；关闭 dialog 不 abort 请求，整个页面只允许一个快速回测。
+const qbState = { file: "", symbol: "", loading: false, running: false, options: null, result: null, request: 0, opener: null };
+function qbError(text) {
+  $("qb-error").textContent = text || "";
+  $("qb-error").className = text ? "msg err" : "msg";
 }
+function qbBusy() {
+  const busy = qbState.loading || qbState.running;
+  $("qb-form").setAttribute("aria-busy", String(busy));
+  $("qb-run").disabled = busy || !qbState.options;
+  $("qb-symbol").disabled = qbState.running;
+  $("qb-bars").disabled = busy || !qbState.options;
+  $("qb-lot").disabled = busy || !qbState.options;
+  $("qb-slip").disabled = busy || !qbState.options;
+  $("qb-comm").disabled = busy || !qbState.options;
+  $("qb-retry").hidden = busy || !!qbState.options;
+  $("qb-progress").hidden = !busy;
+  $("qb-run").textContent = qbState.running ? "回测计算中…" : "运行回测（不下单）";
+}
+function requestQuickBacktestOptions() {
+  return quickBacktest(qbState.file, $("qb-symbol").value.trim(), true);
+}
+function quickBacktestSymbolEdited() {
+  const typed = $("qb-symbol").value.trim();
+  if (typed === qbState.symbol && qbState.options && qbState.options.symbol === typed) return;
+  ++qbState.request;  // 让旧品种的参数请求失效，绝不沿用旧品种的手数/成本范围
+  qbState.symbol = "";
+  qbState.options = null;
+  qbState.result = null;
+  $("qb-result").hidden = true;
+  $("qb-context").textContent = "品种已改为“" + (typed || "未填写") + "”；请读取此品种参数后再运行。";
+  $("qb-status").textContent = "品种已修改，尚未提交回测。";
+  qbError(typed ? "请先读取“" + typed + "”的参数；不同合约的手数范围、point 和成本口径可能不同。" : "请填写当前 MT5 中可见的回测品种。");
+  qbBusy();
+}
+function closeQuickBacktest() {
+  $("qb-dialog").close(); // 仅关闭显示，不代表任务取消
+}
+$("qb-dialog").addEventListener("close", () => {
+  if (qbState.opener && qbState.opener.isConnected) qbState.opener.focus();
+});
+function showQuickBacktest() {
+  if (!$("qb-dialog").open) {
+    qbState.opener = document.activeElement;
+    $("qb-dialog").showModal();
+    $("qb-close").focus();
+  }
+  requestAnimationFrame(drawQuickBacktest);
+}
+function qbNumber(value, digits) {
+  return typeof value === "number" && Number.isFinite(value)
+    ? value.toLocaleString("zh-CN", { minimumFractionDigits: digits, maximumFractionDigits: digits }) : "—";
+}
+function qbNotes(notes) {
+  $("qb-notes").replaceChildren();
+  (notes || []).forEach(note => {
+    const li = document.createElement("li");
+    li.textContent = String(note);
+    $("qb-notes").appendChild(li);
+  });
+}
+function setQuickBacktestSymbol(symbol, strategySymbol) {
+  const input = $("qb-symbol");
+  if (document.activeElement !== input) input.value = symbol || strategySymbol || "";
+  $("qb-symbol-note").textContent = strategySymbol && symbol !== strategySymbol
+    ? "策略原记录品种：" + strategySymbol + "。本次仅改用所选品种模拟，不修改策略或绑定。"
+    : "本次只读取所选品种的最新已收盘 K 线；不会自动在 MT5 中显示品种，也不会修改策略或绑定。";
+}
+async function quickBacktest(file, symbol, force) {
+  // 即使关窗后点了另一个策略，也先显示仍在执行的任务，绝不重复提交。
+  if (qbState.running) {
+    showQuickBacktest();
+    $("qb-status").textContent = "仍在回测 " + fileName(qbState.file) + "，请等待完成后再选择其他策略。关闭窗口不会取消。";
+    return;
+  }
+  if (!force && (qbState.loading || qbState.result) && qbState.file === file && qbState.symbol === (symbol || "")) { showQuickBacktest(); return; }
+  qbState.file = file;
+  qbState.symbol = symbol || "";
+  qbState.options = null;
+  qbState.result = null;
+  qbState.loading = true;
+  const request = ++qbState.request;
+  $("qb-strategy").textContent = "策略：" + fileName(file);
+  setQuickBacktestSymbol(symbol, "");
+  $("qb-context").textContent = "";
+  $("qb-bars").value = "";
+  $("qb-lot").value = "";
+  $("qb-bars-help").textContent = "正在读取允许范围…";
+  $("qb-lot-help").textContent = "正在从当前配置读取默认手数…";
+  $("qb-result").hidden = true;
+  qbError("");
+  qbNotes(["正在读取后端成本和模拟规则；回测不会发送订单。"]);
+  $("qb-status").textContent = "正在读取策略、账户和回测参数…";
+  qbBusy();
+  showQuickBacktest();
+  try {
+    const raw = await api("/api/backtest/quick/options?strategy_file=" + encodeURIComponent(file) + "&symbol=" + encodeURIComponent(qbState.symbol));
+    if (request !== qbState.request) return;
+    if (!raw || !raw.bars || !raw.lot) throw new Error("后端未返回有效的回测参数。");
+    const o = Object.assign({}, raw, { min_bars: raw.bars.min, max_bars: raw.bars.max, default_bars: raw.bars.default,
+      default_lot: raw.lot.default, lot_source: raw.lot.source, volume_min: raw.lot.min, volume_max: raw.lot.max, volume_step: raw.lot.step });
+    if (!o || !Number.isSafeInteger(o.min_bars) || !Number.isSafeInteger(o.max_bars) || o.min_bars <= 0 || o.max_bars < o.min_bars) {
+      throw new Error("后端未返回有效的 K 线数量范围，请确认快速回测接口版本。");
+    }
+    qbState.options = o;
+    qbState.symbol = o.symbol || qbState.symbol;
+    setQuickBacktestSymbol(o.symbol, o.strategy_symbol);
+    $("qb-context").textContent = "回测品种：" + (o.symbol || "—") + " · 策略周期：" + (o.timeframe || "—") + " · 账户货币：" + (o.currency || "未提供");
+    $("qb-bars").min = o.min_bars;
+    $("qb-bars").max = o.max_bars;
+    $("qb-bars").value = Number.isSafeInteger(o.default_bars) ? o.default_bars : "";
+    $("qb-bars-help").textContent = "请求最新 " + o.min_bars + "–" + o.max_bars + " 根已收盘 K 线；另外读取 " + qbNumber(o.warmup_bars, 0) + " 根旧历史用于预热（不计入测试根数）。历史不足会报错，不改用离线缓存。";
+    $("qb-slip").value = o.costs && Number.isFinite(o.costs.slippage_points) ? o.costs.slippage_points : "0";
+    $("qb-comm").value = o.costs && Number.isFinite(o.costs.commission_per_lot_side) ? o.costs.commission_per_lot_side : "0";
+    $("qb-cost-help").textContent = "佣金单位：" + (o.currency || "账户货币") + "/手/单边；滑点单位：该品种 point。默认均为 0，不是券商实收费用；点差按历史逐 bar spread 近似，隔夜费按 0 计算。";
+    $("qb-lot").value = typeof o.default_lot === "number" && Number.isFinite(o.default_lot) && o.default_lot > 0 ? o.default_lot : "";
+    $("qb-lot").min = o.volume_min > 0 ? o.volume_min : "0";
+    $("qb-lot").max = o.volume_max > 0 ? o.volume_max : "";
+    $("qb-lot").step = o.volume_step > 0 ? o.volume_step : "any";
+    const source = { "config.bindings.lot": "当前策略绑定手数", "config.max_lot_per_trade": "当前配置单笔最大手数" }[o.lot_source] || o.lot_source || "当前用户配置";
+    $("qb-lot-help").textContent = ($("qb-lot").value ? "配置默认值来源：" + source + "（已按品种范围和步长校准）" : "当前配置未提供有效默认手数，请手动填写。") +
+      (o.volume_min > 0 && o.volume_max > 0 ? "；品种范围 " + o.volume_min + "–" + o.volume_max + " 手" : "") +
+      (o.volume_step > 0 ? "，步长 " + o.volume_step : "") + "。仅用于本次模拟，不保存配置。";
+    qbNotes(Array.isArray(o.limitations) && o.limitations.length ? o.limitations : ["后端未提供成本明细；不要将本次结果视为扣除全部成本的实盘净收益。"]);
+    $("qb-status").textContent = "参数已读取。确认根数、手数和成本口径后运行。";
+  } catch (e) {
+    if (request !== qbState.request) return;
+    qbState.options = null;
+    qbError("读取回测参数失败：" + e.message);
+    $("qb-status").textContent = "请选择当前 MT5 中可见的回测品种后重新读取参数；尚未提交回测。";
+  } finally {
+    if (request === qbState.request) { qbState.loading = false; qbBusy(); }
+  }
+}
+$("qb-form").addEventListener("submit", event => { event.preventDefault(); runQuickBacktest(); });
+async function runQuickBacktest() {
+  if (qbState.loading || qbState.running || !qbState.options) return;
+  const o = qbState.options, bars = Number($("qb-bars").value), lot = Number($("qb-lot").value);
+  qbError("");
+  if (!$("qb-bars").value.trim() || !Number.isSafeInteger(bars) || bars < o.min_bars || bars > o.max_bars) {
+    qbError("K 线根数必须为 " + o.min_bars + "–" + o.max_bars + " 之间的整数。"); $("qb-bars").focus(); return;
+  }
+  if (!$("qb-lot").value.trim() || !Number.isFinite(lot) || lot <= 0 || (o.volume_min > 0 && lot < o.volume_min) || (o.volume_max > 0 && lot > o.volume_max) ||
+      (o.volume_step > 0 && Math.abs(lot / o.volume_step - Math.round(lot / o.volume_step)) > 1e-7)) {
+    qbError("请填写有效的正手数，并满足品种的最小值、最大值和步长要求。"); $("qb-lot").focus(); return;
+  }
+  const slippage_points = Number($("qb-slip").value), commission_per_lot_side = Number($("qb-comm").value);
+  if (!$("qb-slip").value.trim() || !Number.isFinite(slippage_points) || slippage_points < 0 || slippage_points > 10000 ||
+      !$("qb-comm").value.trim() || !Number.isFinite(commission_per_lot_side) || commission_per_lot_side < 0 || commission_per_lot_side > 100000) {
+    qbError("滑点必须为 0–10000 点；每手单边佣金必须为 0–100000 账户货币。两项均须填写，可明确填 0。"); return;
+  }
+  qbState.running = true;
+  qbState.result = null;
+  $("qb-result").hidden = true;
+  $("qb-status").textContent = "正在从 MT5 读取已收盘 K 线并模拟计算，可能需要一些时间。暂无百分比进度，请勿重复提交。";
+  qbBusy();
+  try {
+    const result = await api("/api/backtest/quick", { method: "POST", body: JSON.stringify({ strategy_file: qbState.file, symbol: qbState.symbol, bars, lot, slippage_points, commission_per_lot_side }) });
+    if (!result || result.ok !== true || !result.summary || !Number.isFinite(result.summary.net_profit)) throw new Error((result && (result.error || result.message)) || "回测接口未返回有效结果");
+    qbState.result = result;
+    renderQuickBacktest(result);
+    $("qb-status").textContent = "回测完成（模拟结果，未发送订单）。可调整参数重新运行。";
+  } catch (e) {
+    qbError("回测失败或连接中断：" + e.message);
+    $("qb-status").textContent = "未收到有效结果；如果连接中断，后台可能仍在计算。请勿立即重复提交。关闭窗口不代表取消。";
+  } finally {
+    qbState.running = false;
+    qbBusy();
+  }
+}
+function renderQuickBacktest(r) {
+  const currency = typeof r.currency === "string" && r.currency ? r.currency : "（货币未提供）";
+  const s = r.summary;
+  $("qb-profit").textContent = qbNumber(s.net_profit, 2) + " " + currency;
+  $("qb-profit").className = "v " + (s.net_profit > 0 ? "long" : s.net_profit < 0 ? "short" : "");
+  $("qb-drawdown").textContent = qbNumber(s.max_drawdown, 2) + " " + currency;
+  $("qb-trades").textContent = qbNumber(s.trades, 0);
+  $("qb-winrate").textContent = s.trades === 0 ? "—（无交易）" : typeof s.win_rate === "number" && Number.isFinite(s.win_rate) ? qbNumber(s.win_rate * 100, 2) + "%" : "—";
+  $("qb-result-meta").textContent = "本次结果 · " + (r.symbol || qbState.options.symbol || "—") + " " + (r.timeframe || qbState.options.timeframe || "—") +
+    " · 请求 " + qbNumber(r.bars_requested, 0) + " 根 / 实际 " + qbNumber(r.bars_used, 0) + " 根已收盘 K 线 · 固定 " + qbNumber(r.lot, 4) + " 手" +
+    " · 预热 " + qbNumber(r.warmup_bars, 0) + " 根 · 滑点假设 " + qbNumber(r.assumptions && r.assumptions.slippage_points, 2) + " 点 · 佣金假设 " + qbNumber(r.assumptions && r.assumptions.commission_per_lot_side, 2) + " " + currency + "/手/单边" +
+    " · 预计点差/滑点/佣金合计 " + qbNumber(s.total_cost, 2) + " " + currency + "（点差逐 bar 近似，隔夜费按 0）" +
+    (s.closed_trade_max_drawdown != null ? " · 已平仓交易最大回撤 " + qbNumber(s.closed_trade_max_drawdown, 2) + " " + currency : "") +
+    " · 如末尾仍持仓，则按最后一根收盘强制平仓";
+  if (Array.isArray(r.limitations) && r.limitations.length) qbNotes(r.limitations);
+  $("qb-chart-title").textContent = "模拟权益曲线（" + currency + "）";
+  $("qb-result").hidden = false;
+  requestAnimationFrame(drawQuickBacktest);
+}
+// 降采样为固定桶，保留桶内首尾与极值点，避免大数组整段渲染。
+function qbDownsample(points, maxPoints) {
+  if (points.length <= maxPoints) return points;
+  const step = points.length / maxPoints, out = [];
+  for (let b = 0; b < maxPoints; b++) {
+    const start = Math.floor(b * step), end = Math.min(points.length, Math.floor((b + 1) * step));
+    let first = points[start], last = points[end - 1], lo = first, hi = first;
+    for (let i = start + 1; i < end; i++) {
+      if (points[i][1] < lo[1]) lo = points[i];
+      if (points[i][1] > hi[1]) hi = points[i];
+    }
+    out.push(first, lo, hi, last);
+  }
+  return out.sort((a, b) => a[0] - b[0]).filter((p, i, arr) => i === 0 || p !== arr[i - 1]);
+}
+function drawQuickBacktest() {
+  if (document.hidden || !$("qb-dialog").open || !qbState.result) return;
+  const r = qbState.result;
+  const offset = typeof r.server_offset_sec === "number" ? r.server_offset_sec : serverOff();
+  const rawPoints = (Array.isArray(r.equity_curve) ? r.equity_curve : []).filter(p => p && Number.isFinite(p.time) && Number.isFinite(p.equity))
+    .map(p => [(p.time - offset) * 1000, p.equity]);
+  // 最多 400 桶 / 1600 点；峰谷保留，统计指标始终来自完整后端结果。
+  const points = qbDownsample(rawPoints, 400);
+  const canvas = $("qb-chart");
+  canvas.hidden = points.length < 2;
+  canvas.style.display = points.length < 2 ? "none" : "block";
+  $("qb-chart-help").textContent = points.length < 2 ? "后端未提供足够的权益采样点；上方统计仍可查看。" :
+    "横轴为 K 线开盘时间标签，数值按该根收盘估值；" + (r.server_offset_sec == null ? "服务器偏移未提供，使用页面当前偏移。" : "已校正 MT5 服务器偏移为本地时间。") +
+    "权益以 0 为起点累计盈亏（含浮盈浮亏与预计平仓成本），不是账户余额；纵轴自动缩放。" +
+    (rawPoints.length > points.length ? "曲线已降采样并保留各段峰谷，统计使用完整数据。" : "");
+  if (points.length < 2) return;
+  const maxLabel = points.reduce((n, p) => Math.max(n, qbNumber(p[1], 2).length), 0);
+  drawLineChart(canvas, points, { color: getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#4da3ff",
+    padL: Math.min(120, Math.max(58, maxLabel * 6 + 12)), fmt: v => qbNumber(v, 2) });
+}
+window.addEventListener("resize", () => requestAnimationFrame(drawQuickBacktest));
+document.addEventListener("visibilitychange", () => { if (!document.hidden) requestAnimationFrame(drawQuickBacktest); });
+if (typeof ResizeObserver !== "undefined") new ResizeObserver(() => requestAnimationFrame(drawQuickBacktest)).observe($("qb-chart"));
 async function delStrategy(name) {
   askConfirm("删除策略", "确定删除 " + name + "？（若已绑定会同时解绑）", async () => {
     try {
@@ -1086,10 +1420,45 @@ async function unbind(symbol) {
   } catch (e) { alert(e.message); }
 }
 async function loadSymbols() {
-  try {
-    const data = await api("/api/mt5/symbols");
-    $("symbol-sugg").innerHTML = "可选：" + data.symbols.slice(0, 30).map(esc).join("、");
-  } catch (e) { $("symbol-sugg").textContent = "拉取失败：" + e.message; }
+  const symbols = await ensureMt5Symbols(true);
+  if (symbols) $("symbol-sugg").innerHTML = "可选：" + symbols.slice(0, 30).map(esc).join("、");
+}
+
+let mt5Symbols = [];
+let mt5SymbolsKey = null;
+let mt5SymbolsAt = 0;
+let mt5SymbolsPending = null;
+function currentSymbolsKey() { return accountKey(lastStatus && lastStatus.account); }
+async function ensureMt5Symbols(force) {
+  const key = currentSymbolsKey();
+  if (!key) return [];
+  const fresh = !force && key === mt5SymbolsKey && Date.now() - mt5SymbolsAt < 5 * 60 * 1000;
+  if (fresh) return mt5Symbols;
+  if (mt5SymbolsPending) return mt5SymbolsPending;
+  mt5SymbolsPending = api("/api/mt5/symbols").then(data => {
+    const responseKey = Array.isArray(data.account_key) ? data.account_key.map(String).join("\u001f") : null;
+    // The terminal may have changed while this request was in flight.
+    if (responseKey !== key || key !== currentSymbolsKey()) return [];
+    mt5Symbols = Array.isArray(data.symbols) ? data.symbols.filter(s => typeof s === "string" && s) : [];
+    mt5SymbolsKey = key;
+    mt5SymbolsAt = Date.now();
+    const dl = $("mt5-symbol-list");
+    if (dl) dl.replaceChildren(...mt5Symbols.map(symbol => {
+      const option = document.createElement("option"); option.value = symbol; return option;
+    }));
+    return mt5Symbols;
+  }).catch(e => {
+    const msg = "无法读取当前 MT5 品种：" + (e.message || "未知错误");
+    $("symbol-sugg").textContent = msg;
+    $("qb-symbol-note").textContent = msg + "；仍可手动输入，但必须是市场报价中可见的品种。";
+    return null;
+  }).finally(() => { mt5SymbolsPending = null; });
+  return mt5SymbolsPending;
+}
+function invalidateMt5Symbols() {
+  mt5Symbols = []; mt5SymbolsKey = null; mt5SymbolsAt = 0;
+  const dl = $("mt5-symbol-list");
+  if (dl) dl.replaceChildren();
 }
 
 // ── 数据文件 ──────────────────────────────────────────────
@@ -1102,7 +1471,6 @@ async function loadDataFiles() {
     }
     const opts = data.files.map(f => "<option value='" + esc(f.path) + "'>" + esc(f.name) + " (" + (f.bars != null ? f.bars.toLocaleString() + "根, " : "") + f.size_mb + "MB, " + f.mtime + ")</option>").join("");
     $("tr-file").innerHTML = opts || "<option value=''>（目录为空，请先导出或放入 Parquet 数据）</option>";
-    $("bt-file").innerHTML = "<option value=''>（用策略内记录的数据）</option>" + opts;
     window._trainFiles = data.files || [];
     updateTrainFileMeta(window._trainFiles);
   } catch (e) {
@@ -1188,37 +1556,52 @@ async function saveDataDir() {
   } catch (e) { showMsg("tr-msg", e.message, false); }
 }
 async function loadEquityChart() {
+  if (document.hidden) return;
+  const requestId = ++equityRequestId;
+  const expectedKey = equityAccountKey;
   try {
     const r = await api("/api/equity/history");
+    const responseKey = Array.isArray(r.account_key) ? r.account_key.map(String).join("\u001f") : null;
+    if (requestId !== equityRequestId || responseKey !== expectedKey) return;
     // 历史余额：由 MT5 成交流水反推（MT5 不保存历史净值）；在线采样：[时间, 净值, 余额?]
-    const histPts = (r.history || []).map(p => [p[0] * 1000, p[1]]);
-    const online = (r.points || []).map(p => [p[0] * 1000, p[1], p.length > 2 ? p[2] : null]);
+    const histPts = (r.history || []).map(p => [p[0] * 1000, p[1]]).filter(p => Number.isFinite(p[0]) && Number.isFinite(p[1]));
+    const online = (r.points || []).map(p => [p[0] * 1000, p[1], p.length > 2 ? p[2] : null]).filter(p => Number.isFinite(p[0]) && Number.isFinite(p[1]));
     const lastHistT = histPts.length ? histPts[histPts.length - 1][0] : -1;
     // 余额线 = 历史段 + 在线采样里的余额列（只取晚于历史段的点，避免折返）
-    const balPts = histPts.concat(online.filter(p => p[2] != null && p[0] > lastHistT).map(p => [p[0], p[2]]));
+    const balPts = histPts.concat(online.filter(p => p[2] != null && Number.isFinite(p[2]) && p[0] > lastHistT).map(p => [p[0], p[2]]));
     const eqPts = online.map(p => [p[0], p[1]]);
     const series = [{ points: balPts, color: "#4da3ff", label: "余额（已实现盈亏）", fill: false }];
     if (eqPts.length >= 2) series.push({ points: eqPts, color: "#2ecc71", label: "净值（含持仓浮动盈亏）" });
     drawSeriesChart($("eq-chart"), series, { fmt: v => v.toFixed(0), legendEl: "eq-legend" });
     const ys = balPts.concat(eqPts).map(p => p[1]);
-    if (ys.length >= 2) {
-      $("eq-chart-meta").textContent =
-        "MT5 不保存历史净值：过去一段只能按成交流水反推「余额」（蓝线）；页面开着时每分钟采样「净值」（绿线），" +
+    $("eq-chart-meta").textContent = ys.length >= 2
+      ? "MT5 不保存历史净值：过去一段只能按成交流水反推「余额」（蓝线）；页面开着时每分钟采样「净值」（绿线），" +
         "持仓时含浮动盈亏所以会波动，无持仓时与余额重合｜期间 " +
-        Math.min.apply(null, ys).toFixed(2) + " ~ " + Math.max.apply(null, ys).toFixed(2);
-    }
-  } catch (e) { /* 忽略 */ }
+        Math.min.apply(null, ys).toFixed(2) + " ~ " + Math.max.apply(null, ys).toFixed(2)
+      : "此账户暂时没有足够的历史曲线数据；页面保持打开后会每分钟采样净值。";
+  } catch (e) {
+    if (requestId === equityRequestId) clearEquityChart("历史曲线读取失败：" + (e.message || "未知错误") + "。已清除旧账户数据，可稍后刷新。");
+  }
 }
 async function loadTrainCurve() {
+  if (document.hidden) return;
   try {
     const r = await api("/api/training/curve");
     const pts = (r.points || []).map(p => [p[0], p[1]]);
     drawLineChart($("tr-chart"), pts, { color: "#4da3ff", fmt: v => v.toFixed(2),
-      xFmt: t => "第" + Math.round(t) + " 步" });
+      xFmt: t => "第" + Math.round(t) + "步" });
+    const skipped = r.skipped_invalid ? "｜已跳过 " + r.skipped_invalid + " 个无效初始分数" : "";
     $("tr-chart-meta").textContent = pts.length
-      ? "品种 " + esc(r.symbol) + "｜已记录 " + pts.length + " 个训练步｜当前最优 " + (r.best != null ? r.best : "—")
-      : "暂无训练历史（训练后自动生成 training_history_*.json）";
-  } catch (e) { /* 忽略 */ }
+      ? "品种 " + esc(r.symbol) + "｜已记录 " + pts.length + " 个有效训练步｜当前最优 " + (r.best != null ? r.best : "—") + skipped
+      : "暂无有效训练分数；训练尚未产生可比较的 best_score。";
+  } catch (e) {
+    const canvas = $("tr-chart");
+    if (canvas) {
+      const ctx = canvas.getContext("2d");
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
+    $("tr-chart-meta").textContent = "训练分数曲线读取失败：" + (e.message || "未知错误") + "。可刷新页面后重试。";
+  }
 }
 
 // ── 训练 ──────────────────────────────────────────────────
@@ -1242,6 +1625,7 @@ async function stopTraining() {
 let _trPace = 0;                      // 平滑后的步速（秒/步）
 let _trLast = null;                   // 上次采样 {step, t, started_at}
 async function pollTraining() {
+  if (document.hidden) return;
   try {
     const s = await api("/api/training/status");
     const p = s.progress || {};
@@ -1296,100 +1680,6 @@ async function pollTraining() {
     }
     loadTrainCurve();
   } catch (e) { /* 忽略 */ }
-}
-
-// ── 回测 ──────────────────────────────────────────────────
-async function startBacktest() {
-  const strategy_file = $("bt-strategy").value;
-  if (!strategy_file) { showMsg("bt-msg", "没有可用策略", false); return; }
-  const payload = {
-    strategy_file,
-    data_file: $("bt-file").value,
-    commission: parseFloat($("bt-commission").value) || 0.08,
-    slippage: parseFloat($("bt-slippage").value) || 0.05,
-  };
-  try {
-    await api("/api/backtest/start", { method: "POST", body: JSON.stringify(payload) });
-    showMsg("bt-msg", "回测已启动", true);
-  } catch (e) { showMsg("bt-msg", e.message, false); }
-  pollBacktest();
-}
-async function stopBacktest() {
-  try { await api("/api/backtest/stop", { method: "POST" }); } catch (e) { /* 忽略 */ }
-  pollBacktest();
-}
-async function pollBacktest() {
-  try {
-    const s = await api("/api/backtest/status");
-    let head = s.running ? "回测中…" : "未运行";
-    if (!s.running && s.exit_code != null) head += "（退出码 " + s.exit_code + (s.exit_code === 0 ? "，成功" : "，失败") + "）";
-    const tail = stripAnsi(s.log_tail || "");
-    $("bt-log").textContent = head + "\n\n" + (tail || "暂无日志");
-    if (!s.running) {
-      loadBacktestReport();
-      if (s.exit_code != null && s.exit_code !== 0) {
-        const errLine = tail.split("\n").map(l => l.trim()).find(l => l.startsWith("[ERROR]"));
-        showMsg("bt-msg", "回测失败：" + (errLine ? errLine.replace("[ERROR] ", "") : "详见下方日志"), false);
-      }
-    }
-  } catch (e) { /* 忽略 */ }
-}
-async function loadBacktestReport(explicit) {
-  try {
-    const r = await api("/api/backtest/report");
-    const rep = r.report;
-    if (rep) {
-      // 数据形如 {symbols: {sym: {...指标...}}, portfolio: {...}}
-      const src = rep.symbols || rep;   // 兼容旧格式（直接按品种做键）
-      const rows = [];
-      const pct = v => v != null ? (v * 100).toFixed(2) + "%" : "—";
-      const num = v => v != null ? Number(v).toFixed(2) : "—";
-      const retCls = v => v == null ? "" : (v > 0 ? "long" : (v < 0 ? "short" : ""));
-      const row = (label, d, isTotal) => {
-        if (!d || typeof d !== "object") return;
-        const ret = d.total_return;
-        rows.push("<tr" + (isTotal ? " style='border-top:2px solid var(--border)'" : "") + ">" +
-          "<td><b>" + esc(label) + "</b></td>" +
-          "<td class='" + retCls(ret) + "'>" + pct(ret) + "</td>" +
-          "<td>" + (d.n_trades != null ? d.n_trades : "—") + "</td>" +
-          "<td>" + pct(d.win_rate) + "</td>" +
-          "<td>" + num(d.profit_loss_ratio) + "</td>" +
-          "<td>" + num(d.avg_hold_bars) + "</td>" +
-          "<td>" + num(d.sharpe) + "</td>" +
-          "<td>" + num(d.sortino) + "</td></tr>");
-      };
-      for (const sym of Object.keys(src)) {
-        const d = src[sym];
-        if (d && typeof d === "object" && d.total_return != null) row(sym, d, false);
-      }
-      row("组合合计", rep.portfolio, true);
-      let html = "";
-      if (rows.length) {
-        html += "<table style='border-collapse:collapse;width:100%'>" +
-          "<tr class='hint'><td align='left'>品种</td><td>收益率</td><td>交易次数</td><td>胜率</td>" +
-          "<td>盈亏比</td><td>平均持仓(根K线)</td><td>夏普比率</td><td>索提诺比率</td></tr>" +
-          rows.join("") + "</table>" +
-          "<div class='hint' style='margin-top:8px'>收益率 = 整段回测的涨跌幅；胜率 = 盈利交易占全部交易的比例；" +
-          "盈亏比 = 平均每笔赚的钱 ÷ 平均每笔亏的钱（大于 1 表示赚的时候比亏的时候多）；" +
-          "夏普/索提诺比率 = 每承担一份波动换到的收益，越高越好，一般大于 1 算不错、小于 0 表示亏得不划算。" +
-          "以上均为历史回测，不代表未来表现。</div>";
-      } else {
-        html += "报告格式解析中，请直接看回测输出图表";
-      }
-      // 策略公式（看得懂的翻译版）折叠展示
-      for (const sym of Object.keys(src)) {
-        const d = src[sym];
-        if (d && d.readable) {
-          html += "<details style='margin-top:8px'><summary class='hint' style='cursor:pointer'>" +
-            esc(sym) + " 策略公式</summary><div class='hint' style='margin-top:4px'>" + esc(d.readable) + "</div></details>";
-        }
-      }
-      $("bt-report").innerHTML = html;
-    } else if (explicit) {
-      $("bt-report").textContent = "暂无报告（先运行回测）";
-    }
-    $("bt-charts").innerHTML = (r.charts || []).map(n => "<img src='/api/backtest/chart/" + encodeURIComponent(n) + "?t=" + Date.now() + "'>").join("");
-  } catch (e) { if (explicit) $("bt-report").textContent = "加载失败：" + e.message; }
 }
 
 // ── 交易控制 ──────────────────────────────────────────────
@@ -1448,6 +1738,13 @@ function addLevel(trigger, lock) {
   tb.appendChild(tr);
 }
 async function saveRisk() {
+  const cooldownField = $("rk-reentry-cooldown");
+  const cooldown = Number(cooldownField.value);
+  if (!cooldownField.value.trim() || !Number.isSafeInteger(cooldown) || cooldown < 0) {
+    showMsg("rk-msg", "平仓后冷却秒数必须是大于等于 0 的整数", false);
+    cooldownField.focus();
+    return;
+  }
   const levels = [];
   document.querySelectorAll("#rk-levels tr").forEach(tr => {
     const t = parseFloat(tr.children[0].querySelector("input").value);
@@ -1461,6 +1758,7 @@ async function saveRisk() {
       price_monitor_interval: parseInt($("rk-interval").value, 10),
       stop_loss_pct: -(Math.abs(parseFloat($("rk-sl").value) || 2) / 100),
       breakeven_levels: levels,
+      reentry_cooldown_sec: cooldown,
     }
   };
   try {
@@ -1472,6 +1770,7 @@ function fillRiskForm(cfg) {
   const r = cfg.risk || {};
   $("rk-enabled").checked = r.enable_price_monitor !== false;
   $("rk-interval").value = r.price_monitor_interval || 10;
+  $("rk-reentry-cooldown").value = r.reentry_cooldown_sec != null ? r.reentry_cooldown_sec : 60;
   $("rk-sl").value = Math.abs((r.stop_loss_pct != null ? r.stop_loss_pct : -0.02) * 100).toFixed(1);
   $("rk-levels").innerHTML = "";
   (r.breakeven_levels || [[0.01, 0], [0.02, 0.01], [0.03, 0.02], [0.04, 0.03]])
@@ -1516,25 +1815,12 @@ async function saveSR() {
 function fillSRSymbolOptions(cfg) {
   const inp = $("sr-chart-symbol");
   if (!inp) return;
-  // 默认值：第一个绑定的品种；品种列表数据源是 MT5 全部品种（datalist 可输入可下拉）
+  // 默认值：第一个绑定的品种；用户已有输入永远不覆盖。
   if (!inp.value) {
     const bound = (cfg.bindings || []).map(b => b.symbol).filter(Boolean);
     inp.value = bound[0] || "ETHUSD_";
   }
-  if (!window.__mt5SymbolsLoading) {
-    window.__mt5SymbolsLoading = true;
-    api("/api/mt5/symbols").then(r => {
-      const dl = $("mt5-symbol-list");
-      if (!dl) return;
-      dl.innerHTML = "";
-      (r.symbols || []).forEach(s => {
-        const opt = document.createElement("option");
-        opt.value = s;
-        dl.appendChild(opt);
-      });
-    }).catch(() => { /* MT5 未连接时保留空列表，可手动输入 */ })
-      .finally(() => { window.__mt5SymbolsLoading = false; });
-  }
+  ensureMt5Symbols();
   if (!srChart.candles.length) loadSRChart();
 }
 
@@ -1604,6 +1890,7 @@ function srChartSyncPosSelector() {
   sel.style.display = ""; lab.style.display = "";
 }
 async function loadSRChart(silent) {
+  if (document.hidden) return;
   const inp = $("sr-chart-symbol");
   if (!inp) return;
   const symbol = inp.value.trim();
@@ -1665,6 +1952,7 @@ function renderSRChartLegend() {
   box.innerHTML = rows.length ? rows.join("") : "距离带内暂无关键位。";
 }
 function drawSRChart() {
+  if (document.hidden || !$("tab-chart").classList.contains("active")) return;
   const cv = $("sr-chart");
   if (!cv) return;
   const dpr = window.devicePixelRatio || 1;
@@ -2173,6 +2461,7 @@ $("sr-draft-lot").addEventListener("input", () => {
 
 // ── 挂单列表 / 撤销 / 表单挂单 / 持仓止盈止损 ────────────────────────
 async function loadPendingList() {
+  if (document.hidden) return;
   const box = $("pend-list");
   if (!box) return;
   try {
@@ -2435,7 +2724,7 @@ function bindSRChartEvents() {
 }
 bindSRChartEvents();
 setInterval(() => {
-  const sec = $("tab-overview");
+  const sec = $("tab-chart");
   if (document.visibilityState === "visible" && sec && sec.classList.contains("active") &&
       $("sr-chart-auto") && $("sr-chart-auto").checked) loadSRChart(true);
 }, 15000);
@@ -2489,6 +2778,7 @@ function editTarget(ticket, symbol, curTp, curPrice, direction) {
 
 // ── 历史成交 ──────────────────────────────────────────────
 async function loadHistory() {
+  if (document.hidden) return;
   const days = parseInt($("hs-days").value, 10) || 7;
   const scope = $("hs-scope").value;
   try {
@@ -2549,6 +2839,7 @@ async function loadHistory() {
 // ── 日志 ──────────────────────────────────────────────────
 let lgCurrent = "runner";
 async function loadLogView() {
+  if (document.hidden) return;
   lgCurrent = $("lg-source").value;
   try {
     if (lgCurrent === "training") {
@@ -2588,14 +2879,19 @@ function exportLog() {
 // ── 外观设置（背景图片 / 玻璃质感 / 工具条位置）─────────────────
 const UI_KEY = "mt5.ui";
 function uiPrefs() {
-  try { return JSON.parse(localStorage.getItem(UI_KEY) || "{}"); } catch (e) { return {}; }
+  try {
+    const p = JSON.parse(localStorage.getItem(UI_KEY) || "{}");
+    return p && typeof p === "object" && !Array.isArray(p) ? p : {};
+  } catch (e) { return {}; }
 }
 function saveUiPrefs(p) {
   try { localStorage.setItem(UI_KEY, JSON.stringify(p)); return true; }
   catch (e) { return false; }   // 一般是图片太大超出浏览器本地存储上限
 }
 function applyNavPos(v) { document.documentElement.classList.toggle("ui-nav-left", v === "left"); }
-function applyGlass(on) { document.documentElement.classList.toggle("ui-glass", !!on); }
+function saveAppearance(p) {
+  if (!saveUiPrefs(p)) showMsg("ap-style-msg", "当前预览已生效，但浏览器未能保存设置（可能存储已满或不可用）。", false);
+}
 function applyBlur(v) {
   document.documentElement.style.setProperty("--ui-blur", (v == null ? 14 : v) + "px");
 }
@@ -2626,7 +2922,9 @@ function applyBg(dataUrl, dim) {
 function fillAppearance() {
   const p = uiPrefs();
   $("ui-navpos").value = p.nav === "left" ? "left" : "top";
-  $("ui-glass").checked = !!p.glass;
+  $("ui-material").value = uiMaterial(p);
+  $("ui-blur").disabled = uiMaterial(p) !== "glass";
+  syncAccentControls(p.accent);
   $("ui-blur").value = p.blur != null ? p.blur : 14;
   $("ui-blur-val").textContent = $("ui-blur").value + "px";
   $("bg-dim").value = p.dim != null ? p.dim : (p.bg ? 45 : 0);
@@ -2681,11 +2979,32 @@ $("ui-navpos").addEventListener("change", () => {
   saveUiPrefs(p);
   applyNavPos(p.nav);
 });
-$("ui-glass").addEventListener("change", () => {
+function syncAccentControls(v) {
+  const color = uiAccent(v);
+  $("ui-accent").value = color;
+  $("ui-accent-val").textContent = color;
+  const preset = $("ui-accent-preset");
+  preset.value = Array.from(preset.options).some(o => o.value === color) ? color : "custom";
+}
+function changeAccent(v) {
   const p = uiPrefs();
-  p.glass = $("ui-glass").checked;
-  saveUiPrefs(p);
-  applyGlass(p.glass);
+  p.accent = uiAccent(v);
+  applyAccent(p.accent);
+  syncAccentControls(p.accent);
+  saveAppearance(p);
+}
+$("ui-accent-preset").addEventListener("change", () => {
+  if ($("ui-accent-preset").value === "custom") { $("ui-accent").focus(); return; }
+  changeAccent($("ui-accent-preset").value);
+});
+$("ui-accent").addEventListener("input", () => changeAccent($("ui-accent").value));
+$("ui-material").addEventListener("change", () => {
+  const p = uiPrefs();
+  p.material = $("ui-material").value;
+  p.glass = p.material === "glass"; // 保留旧版兼容字段，其他偏好不变
+  saveAppearance(p);
+  applyMaterial(p.material);
+  $("ui-blur").disabled = !p.glass;
 });
 $("ui-blur").addEventListener("input", () => {
   $("ui-blur-val").textContent = $("ui-blur").value + "px";
@@ -2695,10 +3014,44 @@ $("ui-blur").addEventListener("input", () => {
   applyBlur(p.blur);
 });
 
+// ── 页面可见性：只暂停显示，不停止后台任务或取消已确认的操作 ─────
+function refreshClock() {
+  if (!document.hidden) $("clock").textContent = new Date().toLocaleString("zh-CN", { hour12: false });
+}
+async function resumeVisibleUI() {
+  refreshClock();
+  await refreshStatus();
+  if (document.hidden) return;
+  layoutLeftNav();
+  const active = document.querySelector("nav button.active");
+  const tab = active && active.dataset.tab;
+  if (tab === "chart") {
+    loadPendingList();
+    if ($("sr-chart-auto").checked) loadSRChart(true);
+    else drawSRChart(); // 自动刷新关闭时只重绘缓存，不改变用户选择
+  }
+  if (tab === "training") pollTraining();
+  if (tab === "history") loadHistory();
+  loadEquityChart(); // 补一次在线采样；非历史页不会绘制隐藏画布
+  if (tab === "logs" && $("lg-auto").checked) loadLogView();
+  // 不重填配置/下单表单，不关闭确认框，保留尚未提交的用户输入。
+}
+document.addEventListener("visibilitychange", () => {
+  document.documentElement.classList.toggle("ui-paused", document.hidden);
+  if (document.hidden) {
+    // 切出窗口可能收不到 mouseup：清除未提交的拖动，避免返回后误提交。
+    srChart.drag = null; srChart.lineDrag = null; srChart.hover = null;
+    srChart.entryShift = 0; srChart.pendingShift = null;
+    $("sr-chart-tip").style.display = "none";
+    $("sr-chart").style.cursor = "crosshair";
+    hideSrCtxMenu();
+    return;
+  }
+  resumeVisibleUI().catch(e => console.error("恢复界面刷新失败:", e));
+});
+
 // ── 定时器 ────────────────────────────────────────────────
-setInterval(() => {
-  $("clock").textContent = new Date().toLocaleString("zh-CN", { hour12: false });
-}, 1000);
+setInterval(refreshClock, 1000);
 setInterval(() => { refreshStatus(); }, 5000);
 setInterval(() => { loadEquityChart(); }, 60000);   // 净值采样一分钟一点足够
 setInterval(() => {
@@ -2706,7 +3059,6 @@ setInterval(() => {
   if (!active) return;
   if (active.dataset.tab === "chart") loadPendingList();
   if (active.dataset.tab === "training") pollTraining();
-  if (active.dataset.tab === "backtest") pollBacktest();
   if (active.dataset.tab === "logs" && $("lg-auto") && $("lg-auto").checked) loadLogView();
 }, 5000);
 
@@ -2725,7 +3077,8 @@ setInterval(() => {
   // 外观偏好（头部脚本已尽早应用类名/背景，这里补上变暗层并同步设置面板）
   const p0 = uiPrefs();
   applyNavPos(p0.nav);
-  applyGlass(p0.glass);
+  applyMaterial(uiMaterial(p0));
+  applyAccent(p0.accent);
   applyBlur(p0.blur);
   applyNavMin(p0.navMin);
   applyBg(p0.bg, p0.dim);
@@ -2736,6 +3089,7 @@ setInterval(() => {
   try { fillRiskForm(await api("/api/config")); } catch (e) { /* 忽略 */ }
   loadDataFiles();
   loadStrategyDropdowns();
+  ensureMt5Symbols();
   loadSRChart();
   window.addEventListener("resize", () => { loadEquityChart(); loadTrainCurve(); });
   window.addEventListener("error", ev => console.error("页面JS错误:", ev.message));
