@@ -62,7 +62,7 @@ _job_lock = threading.RLock()
 CREATE_NO_WINDOW = 0x08000000
 CREATE_NEW_PROCESS_GROUP = 0x00000200
 
-app = FastAPI(title="MT5AutoTrader", version="1.1.0")
+app = FastAPI(title="MT5AutoTrader", version="1.1.1")
 
 
 @app.middleware("http")
