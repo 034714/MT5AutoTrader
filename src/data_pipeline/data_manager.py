@@ -242,13 +242,21 @@ class MT5DataManager:
             for sub in indexed.values():
                 union_index = union_index.union(sub.index)
             union_index = union_index.sort_values()
+            # A union can begin before some symbols have any real quote.  Do
+            # not turn that unknown prefix into zero-priced synthetic bars:
+            # start at the latest first observation, then use causal ffill.
+            first_observation = max(sub.index.min() for sub in indexed.values())
+            causal_index = union_index[union_index >= first_observation]
+            if len(causal_index) < Config.MIN_BARS:
+                raise ValueError(
+                    f"Union fallback has only {len(causal_index)} causal bars "
+                    f"after the latest symbol start (need {Config.MIN_BARS})"
+                )
             aligned: dict[str, pd.DataFrame] = {}
             for symbol, sub in indexed.items():
-                reindexed = sub.reindex(union_index)
-                # 仅使用 ffill（因果填充），禁止 bfill 以避免未来信息泄漏
-                reindexed = reindexed.ffill()
-                # 起始处的 NaN（无历史数据）填充为 0，避免下游 log/divide 出 -inf
-                reindexed = reindexed.fillna(0.0)
+                reindexed = sub.reindex(union_index).ffill().loc[causal_index]
+                if reindexed[fields].isna().any().any():
+                    raise ValueError(f"Union fallback lacks causal history for {symbol}")
                 aligned[symbol] = reindexed[fields]
             return aligned
 

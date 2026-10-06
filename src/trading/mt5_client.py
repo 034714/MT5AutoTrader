@@ -11,6 +11,7 @@ trading/mt5_client.py — MT5 连接与订单执行
 """
 from __future__ import annotations
 
+import math
 import time
 from datetime import datetime
 from typing import Any
@@ -36,6 +37,7 @@ RETCODE_HINTS = {
     10014: "手数无效",
     10013: "请求参数无效",
     10006: "订单被拒绝",
+    10044: "MT5 当前只允许平仓，不允许开新仓（常见于市场休市、品种结算或券商对某品种暂停开仓）",
 }
 
 
@@ -153,6 +155,7 @@ class MT5Client:
         self.magic = int(magic if magic is not None else Config.MAGIC_NUMBER)
         self.dry_run = bool(Config.DRY_RUN if dry_run is None else dry_run)
         self._connected = False
+        self.last_execution: dict[str, Any] = {}
 
     # ── 连接 ─────────────────────────────────────────────────────
 
@@ -240,7 +243,7 @@ class MT5Client:
             tick = mt5.symbol_info_tick(symbol)
         except Exception:  # pragma: no cover
             return None
-        if tick is None or tick.bid <= 0 or tick.ask <= 0:
+        if tick is None or not all(math.isfinite(float(v)) and v > 0 for v in (tick.bid, tick.ask)):
             return None
         return {"bid": float(tick.bid), "ask": float(tick.ask), "time": int(tick.time)}
 
@@ -308,8 +311,8 @@ class MT5Client:
     ) -> dict[str, Any]:
         """市价开仓。direction: 'BUY'/'SELL'。返回 {"ok": bool, "retcode", "comment", "order"}。"""
         lot = float(lot)
-        if lot <= 0:
-            return {"ok": False, "retcode": None, "comment": f"手数无效 lot={lot}", "order": 0}
+        if direction not in ("BUY", "SELL") or not math.isfinite(lot) or lot <= 0:
+            return {"ok": False, "status": "rejected", "retcode": None, "comment": f"手数或方向无效 lot={lot}", "order": 0}
         if self.dry_run:
             logger.info(
                 f"[DRY-RUN] 开仓 {symbol} {direction} {lot} 手 SL={sl} TP={tp}"
@@ -517,49 +520,80 @@ class MT5Client:
 
     def close_position(self, symbol: str, ticket: int,
                        volume: float | None = None) -> bool:
-        """按 ticket 平仓。volume 给定时只平该手数（部分平仓），否则全部平掉。"""
+        """按 ticket 平仓并严格确认结果；查询失败或未观察到变化均不算成功。"""
+        self.last_execution = {"ok": False, "status": "rejected", "accepted": False,
+                               "unknown": False, "order": 0, "deal": 0, "volume": 0.0}
+        if volume is not None and (not math.isfinite(float(volume)) or volume <= 0):
+            return False
         if self.dry_run:
             logger.info(f"[DRY-RUN] 平仓 {symbol} ticket={ticket} vol={volume or '全部'}")
+            self.last_execution = {"ok": True, "status": "completed", "accepted": True,
+                                   "partial": False, "unknown": False, "order": 0,
+                                   "deal": 0, "volume": float(volume or 0)}
             return True
-        position = self._find_ticket(ticket)
+        try:
+            positions = self.get_positions(symbol, strict=True)
+        except ConnectionError as exc:
+            self.last_execution = {"ok": False, "status": "unknown", "unknown": True,
+                                   "comment": str(exc), "order": 0, "deal": 0}
+            return False
+        position = next((p for p in positions if int(p.ticket) == int(ticket)), None)
         if position is None:
-            logger.warning(f"[MT5Client] 未找到 ticket={ticket} 的持仓（可能已平）")
-            return not self._ticket_exists(ticket)  # 已不存在视为成功
-        close_volume = float(volume) if (volume is not None and volume > 0) \
-            else float(position.volume)
-        if close_volume > float(position.volume) + 1e-9:
-            close_volume = float(position.volume)
+            self.last_execution = {"ok": True, "status": "completed", "accepted": True,
+                                   "partial": False, "unknown": False, "order": 0,
+                                   "deal": 0, "volume": 0.0, "already_absent": True}
+            return True
+        before = float(position.volume)
+        if not math.isfinite(before) or before <= 0:
+            return False
+        close_volume = float(volume) if (volume is not None and volume > 0) else before
+        if not math.isfinite(close_volume) or close_volume <= 0:
+            return False
+        close_volume = min(close_volume, before)
         tick = mt5.symbol_info_tick(symbol)
         if tick is None:
-            logger.error(f"[MT5Client] {symbol}: 无法获取报价: {mt5.last_error()}")
             return False
         close_type = mt5.ORDER_TYPE_SELL if position.type == 0 else mt5.ORDER_TYPE_BUY
         price = tick.bid if position.type == 0 else tick.ask
-        result = self._send_request(
-            {
-                "action": mt5.TRADE_ACTION_DEAL,
-                "symbol": symbol,
-                "volume": close_volume,
-                "type": close_type,
-                "position": int(position.ticket),
-                "price": float(price),
-                "deviation": 20,
-                "magic": self.magic,
-                "comment": "MT5AutoTrader close",
-                "type_time": mt5.ORDER_TIME_GTC,
-            }
-        )
-        return bool(result["ok"])
+        result = self._send_request({
+            "action": mt5.TRADE_ACTION_DEAL, "symbol": symbol, "volume": close_volume,
+            "type": close_type, "position": int(position.ticket), "price": float(price),
+            "deviation": 20, "magic": self.magic, "comment": "MT5AutoTrader close",
+            "type_time": mt5.ORDER_TIME_GTC,
+        })
+        if not result.get("accepted"):
+            return False
+        try:
+            after = self.get_positions(symbol, strict=True)
+        except ConnectionError as exc:
+            self.last_execution.update(ok=False, status="unknown", unknown=True,
+                                       comment=f"close accepted; verify failed: {exc}")
+            return False
+        remaining = next((float(p.volume) for p in after if int(p.ticket) == int(ticket)), 0.0)
+        expected = max(0.0, before - close_volume)
+        tolerance = max(1e-8, close_volume * 1e-6)
+        verified = remaining <= tolerance if expected <= tolerance else remaining <= expected + tolerance
+        self.last_execution.update(ok=verified, verified=verified,
+                                   status=("completed" if remaining <= tolerance else
+                                           "partial" if remaining < before - tolerance else "accepted"),
+                                   partial=0 < remaining < before - tolerance, remaining_volume=remaining)
+        return verified
 
     def close_symbol_all(self, symbol: str) -> bool:
         """平掉该品种（magic 过滤）的全部持仓；全部成功才返回 True。"""
-        positions = self.get_positions(symbol)
+        try:
+            positions = self.get_positions(symbol, strict=True)
+        except ConnectionError:
+            return False
         if not positions:
             return True
         ok = True
         for p in positions:
             if not self.close_position(symbol, int(p.ticket)):
                 ok = False
+                execution = getattr(self, "last_execution", {})
+                if execution.get("unknown") or execution.get("accepted"):
+                    break
             time.sleep(0.1)
         return ok
 
@@ -569,10 +603,20 @@ class MT5Client:
         if self.dry_run:
             logger.info(f"[DRY-RUN] 修改止损 {symbol} ticket={ticket} SL→{new_sl} TP→{tp}")
             return True
+        try:
+            position = next((p for p in self.get_positions(symbol, strict=True)
+                             if int(p.ticket) == int(ticket)), None)
+        except ConnectionError:
+            return False
+        if position is None or any(v is not None and (not math.isfinite(float(v)) or v < 0)
+                                   for v in (new_sl, tp)):
+            return False
         request: dict[str, Any] = {
             "action": mt5.TRADE_ACTION_SLTP,
             "symbol": symbol,
             "position": int(ticket),
+            "sl": float(position.sl) if new_sl is None else float(new_sl),
+            "tp": float(getattr(position, "tp", 0) or 0) if tp is None else float(tp),
         }
         if new_sl is not None and new_sl > 0:
             request["sl"] = float(new_sl)
@@ -580,7 +624,7 @@ class MT5Client:
             # 0 = 显式清除止盈（TRADE_ACTION_SLTP 里 tp=0 才是清除）；None = 保持不变
             request["tp"] = float(tp) if tp > 0 else 0.0
         result = self._send_request(request)
-        return bool(result["ok"])
+        return result.get("status") == "completed"
 
     def stops_level_points(self, symbol: str) -> int:
         """券商最小止损距离（点）。symbol_info 不可用时返回 0。"""
@@ -668,40 +712,64 @@ class MT5Client:
         return list(dict.fromkeys(modes))
 
     def _send_request(self, request: dict) -> dict[str, Any]:
-        """发送订单，填充模式自动重试。返回 {"ok","retcode","comment","order"}。"""
-        last_retcode = None
-        last_comment = ""
-        last_order = 0
-        for filling in self._fill_modes(request.get("symbol")):
+        """Retry only a definite INVALID_FILL rejection; never retry ambiguity."""
+        action = request.get("action")
+        deal_action = getattr(mt5, "TRADE_ACTION_DEAL", 1)
+        pending_action = getattr(mt5, "TRADE_ACTION_PENDING", 5)
+        modes = self._fill_modes(request.get("symbol")) if action in (
+            deal_action, pending_action) else [None]
+        outcome = {"ok": False, "status": "rejected", "accepted": False,
+                   "partial": False, "unknown": False, "retcode": None,
+                   "comment": "", "hint": "", "order": 0, "deal": 0,
+                   "volume": 0.0, "price": 0.0}
+        for key in ("volume", "price", "sl", "tp"):
+            if key not in request:
+                continue
+            try:
+                value = float(request[key])
+            except (TypeError, ValueError):
+                outcome["comment"] = f"invalid {key}"
+                self.last_execution = outcome
+                return outcome
+            if not math.isfinite(value) or value < 0 or \
+                    (key in ("volume", "price") and value == 0):
+                outcome["comment"] = f"invalid {key}"
+                self.last_execution = outcome
+                return outcome
+        for filling in modes:
             req = dict(request)
-            req["type_filling"] = filling
+            if filling is not None:
+                req["type_filling"] = filling
             try:
                 result = mt5.order_send(req)
-            except Exception as exc:  # pragma: no cover
-                logger.error(f"[MT5Client] order_send 异常: {exc}")
-                return {"ok": False, "retcode": None, "comment": str(exc), "order": 0}
-            if result is None:
-                last_retcode, last_comment = mt5.last_error()
+                if result is None:
+                    outcome.update(status="unknown", unknown=True,
+                                   comment=str(mt5.last_error()))
+                    break
+                code = int(result.retcode)
+                outcome.update(retcode=code, comment=str(getattr(result, "comment", "")),
+                               hint=retcode_hint(code),
+                               order=int(getattr(result, "order", 0) or 0),
+                               deal=int(getattr(result, "deal", 0) or 0),
+                               position_id=int(getattr(result, "position_id", 0) or 0),
+                               volume=float(getattr(result, "volume", 0) or 0),
+                               price=float(getattr(result, "price", 0) or 0))
+            except Exception as exc:
+                outcome.update(status="unknown", unknown=True, comment=str(exc))
+                break
+            if code == getattr(mt5, "TRADE_RETCODE_INVALID_FILL", 10030):
                 continue
-            last_retcode = result.retcode
-            last_comment = result.comment
-            last_order = int(getattr(result, "order", 0) or 0)
-            if result.retcode == mt5.TRADE_RETCODE_DONE:
-                logger.success(
-                    f"[MT5Client] 订单成交 ticket={last_order} {request.get('symbol')} "
-                    f"vol={request.get('volume')} sl={request.get('sl')}"
-                )
-                return {"ok": True, "retcode": result.retcode, "comment": "", "hint": "", "order": last_order}
-            if result.retcode not in (mt5.TRADE_RETCODE_INVALID_FILL, 10030):
-                break  # 非填充模式错误，重试无意义
-        logger.error(
-            f"[MT5Client] 订单失败: {request.get('symbol')} vol={request.get('volume')} "
-            f"retcode={last_retcode} comment={last_comment} {retcode_hint(last_retcode)}"
-        )
-        return {
-            "ok": False,
-            "retcode": last_retcode,
-            "comment": str(last_comment),
-            "hint": retcode_hint(last_retcode),
-            "order": last_order,
-        }
+            done = code == getattr(mt5, "TRADE_RETCODE_DONE", 10009)
+            placed = code == getattr(mt5, "TRADE_RETCODE_PLACED", 10008)
+            partial = code == getattr(mt5, "TRADE_RETCODE_DONE_PARTIAL", 10010)
+            if placed or (done and action == pending_action):
+                outcome.update(ok=True, status="accepted", accepted=True)
+            elif partial and action == deal_action:
+                outcome.update(ok=True, status="partial", accepted=True, partial=True)
+            elif done:
+                outcome.update(ok=True, status="completed", accepted=True)
+            elif code in (10012, 10031):  # Timeout/connection failure cannot prove rejection.
+                outcome.update(status="unknown", unknown=True)
+            break
+        self.last_execution = outcome
+        return outcome

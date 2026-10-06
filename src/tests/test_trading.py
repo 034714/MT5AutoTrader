@@ -14,7 +14,9 @@ tests/test_trading.py — MT5AutoTrader 交易逻辑单元测试（全部 mock�
 """
 from __future__ import annotations
 
+import atexit
 import json
+import shutil
 import sys
 import tempfile
 import time
@@ -26,6 +28,7 @@ sys.path.insert(0, str(ROOT))
 
 # ── 隔离配置与状态文件，避免污染真实运行环境 ──────────────────────
 _TMP = Path(tempfile.mkdtemp(prefix="mt5at_test_"))
+atexit.register(shutil.rmtree, _TMP, ignore_errors=True)
 import config as cfgmod  # noqa: E402
 
 cfgmod.TRADER_CONFIG_FILE = _TMP / "trader_config.json"
@@ -50,6 +53,7 @@ runner_mod.STATE_FILE = _TMP / "portfolio_state.json"
 runner_mod.STATUS_FILE = _TMP / "runner_status.json"
 runner_mod.STOP_FILE = _TMP / "STOP_SIGNAL"
 runner_mod.PARTIAL_OVERRIDES_FILE = _TMP / "sr_partial_overrides.json"
+runner_mod.SL_OVERRIDES_FILE = _TMP / "sl_overrides.json"
 
 PASSED: list[str] = []
 FAILED: list[str] = []
@@ -192,6 +196,9 @@ def make_runner(client: MockClient, mode: str) -> runner_mod.TradingRunner:
     r.client = client
     r.risk = RiskManager(client, RiskParams())
     r.book = runner_mod.PositionBook(mode)
+    if mode == "live":
+        ai = client.account_info()
+        r.book.state["account_identity"] = [str(ai.server), int(ai.login), str(ai.currency)]
     r.bindings = []
     r.strategies = {}
     r._last_bar_time = {}
@@ -847,9 +854,11 @@ def test_sr_partial_override():
     r._ov_mtime = None
     r._ov_cache = None
     r._ov_applied_ts = {}
+    account_key = ["Demo-Server", 12345678, "USD"]
     # 设置覆盖：到 106 平 0.03 手
     runner_mod.PARTIAL_OVERRIDES_FILE.write_text(_json.dumps({
-        "9000031": {"price": 106.0, "close_volume": 0.03, "ts": 100.0},
+        "9000031": {"price": 106.0, "close_volume": 0.03, "ts": 100.0,
+                    "account_key": account_key},
     }), encoding="utf-8")
     r._apply_partial_overrides(r._load_partial_overrides())
     plan = r.book.get_position("TEST")["sr_partial"]
@@ -862,7 +871,8 @@ def test_sr_partial_override():
     check("同一覆盖不重复应用", r.book.get_position("TEST")["sr_partial"] == plan)
     # 取消覆盖：price=0
     runner_mod.PARTIAL_OVERRIDES_FILE.write_text(_json.dumps({
-        "9000031": {"price": 0.0, "close_volume": 0.0, "ts": 200.0},
+        "9000031": {"price": 0.0, "close_volume": 0.0, "ts": 200.0,
+                    "account_key": account_key},
     }), encoding="utf-8")
     r._ov_mtime = None
     r._apply_partial_overrides(r._load_partial_overrides())
@@ -870,10 +880,12 @@ def test_sr_partial_override():
     check("price=0 取消计划", plan2["done"] is True and float(plan2["price"]) == 0.0,
           str(plan2))
     # 非法手数（0.2 ≥ 持仓 0.1）→ 标记无效，不再触发
+    account_key = ["Demo-Server", 12345678, "USD"]
     r.book.get_position("TEST")["sr_partial"] = {
         "price": 105.5, "close_volume": 0.05, "remaining": 0.05, "done": False}
     runner_mod.PARTIAL_OVERRIDES_FILE.write_text(_json.dumps({
-        "9000031": {"price": 106.0, "close_volume": 0.2, "ts": 300.0},
+        "9000031": {"price": 106.0, "close_volume": 0.2, "ts": 300.0,
+                    "account_key": account_key},
     }), encoding="utf-8")
     r._ov_mtime = None
     r._apply_partial_overrides(r._load_partial_overrides())
@@ -909,7 +921,9 @@ def test_manual_sl_respected():
           abs(client.positions[0].sl - init_sl) < 0.01,
           f"sl={client.positions[0].sl} init={init_sl}")
     # 看板覆盖应用：更新台账止损 + 标记手动
-    r._apply_sl_overrides({"7100001": {"sl": 101.2, "ts": 1000.0, "applied_to_mt5": True}})
+    r._apply_sl_overrides({"7100001": {"sl": 101.2, "ts": 1000.0,
+                                        "applied_to_mt5": True,
+                                        "account_key": ["Demo-Server", 12345678, "USD"]}})
     check("覆盖更新台账止损并标记手动", r.book.get_position("TEST")["sl"] == 101.2 and
           r.book.manual_sl_tickets() == {7100001})
     # 阶梯保本对手动仓位仍生效：浮盈 +1% → 锁到成本

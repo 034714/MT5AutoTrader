@@ -12,7 +12,10 @@ config.py — MT5AutoTrader 统一配置（项目根目录）
 from __future__ import annotations
 
 import json
+import math
 import os
+import tempfile
+import threading
 from pathlib import Path
 
 try:
@@ -34,7 +37,7 @@ except ImportError:  # 无 MT5 的测试环境用整数占位常量（与真实 
 
 try:
     from dotenv import load_dotenv
-    load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 except ImportError:
     pass
 
@@ -94,32 +97,134 @@ DEFAULT_TRADER_CONFIG: dict = {
 }
 
 
+CONFIG_LOCK = threading.RLock()
+_LAST_VALID: dict | None = None
+
+
+def _finite(value, name: str, low=None, high=None, *, integer=False) -> float:
+    try:
+        finite = type(value) in (int, float) and math.isfinite(value)
+    except (OverflowError, ValueError):
+        finite = False
+    if not finite:
+        raise ValueError(f"{name} must be a finite number")
+    if integer and type(value) is not int:
+        raise ValueError(f"{name} must be an integer")
+    if (low is not None and value < low) or (high is not None and value > high):
+        raise ValueError(f"{name} is outside the allowed range")
+    return value
+
+
+def validate_trader_config(cfg: dict) -> dict:
+    if not isinstance(cfg, dict) or type(cfg.get("dry_run")) is not bool:
+        raise ValueError("dry_run must be a boolean")
+    for key, low, high, integer in (
+        ("min_trade_exposure", 0, 1, False),
+        ("max_lot_per_trade", 1e-12, 100000, False),
+        ("max_open_positions", 1, 100000, True),
+        ("magic_number", 0, 2147483647, True),
+        ("deviation_points", 0, 100000, True),
+        ("signal_bars", 800, 10000000, True),
+    ):
+        _finite(cfg.get(key), key, low, high, integer=integer)
+    if not isinstance(cfg.get("kline_cache_dir"), str) or not cfg["kline_cache_dir"].strip():
+        raise ValueError("kline_cache_dir must be a nonempty path")
+    risk = cfg.get("risk")
+    if not isinstance(risk, dict) or set(risk) - set(DEFAULT_TRADER_CONFIG["risk"]):
+        raise ValueError("invalid risk keys")
+    for key, default in DEFAULT_TRADER_CONFIG["risk"].items():
+        value = risk.get(key)
+        if type(default) is bool:
+            if type(value) is not bool:
+                raise ValueError(f"{key} must be a boolean")
+        elif key != "breakeven_levels":
+            low, high = 0, 100
+            if key == "stop_loss_pct": low, high = -1, -1e-12
+            elif key == "price_monitor_interval": low, high = 5, 10
+            elif key == "reentry_cooldown_sec": low, high = 0, 86400000
+            elif key == "sr_partial_fraction": low, high = 1e-12, 1 - 1e-12
+            elif key.endswith("_pct") or key == "sr_partial_min_phold": high = 1
+            _finite(value, key, low, high, integer=type(default) is int)
+    levels = risk.get("breakeven_levels")
+    if not isinstance(levels, list):
+        raise ValueError("breakeven_levels must be a list")
+    previous = -1
+    for pair in levels:
+        if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+            raise ValueError("each breakeven level must have two numbers")
+        trigger = _finite(pair[0], "trigger", 1e-12, 1)
+        lock = _finite(pair[1], "lock", 0, 1)
+        if trigger <= previous or lock >= trigger:
+            raise ValueError("breakeven levels must increase and lock below trigger")
+        previous = trigger
+    for prefix in ("sl", "tp"):
+        if risk[f"sr_min_{prefix}_pct"] > risk[f"sr_max_{prefix}_pct"]:
+            raise ValueError(f"sr_min_{prefix}_pct exceeds maximum")
+    bindings = cfg.get("bindings")
+    if not isinstance(bindings, list):
+        raise ValueError("bindings must be a list")
+    symbols = set()
+    for binding in bindings:
+        if not isinstance(binding, dict):
+            raise ValueError("invalid binding")
+        for key in ("symbol", "strategy_file"):
+            if not isinstance(binding.get(key), str) or not binding[key].strip():
+                raise ValueError(f"binding {key} is required")
+        path = Path(binding["strategy_file"].replace("\\", "/"))
+        if path.is_absolute() or len(path.parts) != 2 or path.parts[0] != "strategies" or path.suffix != ".json":
+            raise ValueError("binding must use a strategies/*.json path")
+        _finite(binding.get("lot"), "lot", 1e-12, cfg["max_lot_per_trade"])
+        if binding["symbol"] in symbols:
+            raise ValueError("duplicate binding symbol")
+        symbols.add(binding["symbol"])
+    return cfg
+
+
+def _atomic_json_write(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2, ensure_ascii=False, allow_nan=False)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_name, path)
+    finally:
+        Path(tmp_name).unlink(missing_ok=True)
+
+
 def load_trader_config() -> dict:
-    """读取 trader_config.json；不存在或缺字段时用默认值补齐并写回。"""
-    cfg = json.loads(json.dumps(DEFAULT_TRADER_CONFIG))  # deep copy
-    if TRADER_CONFIG_FILE.exists():
-        try:
-            data = json.loads(TRADER_CONFIG_FILE.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
+    global _LAST_VALID
+    with CONFIG_LOCK:
+        cfg = json.loads(json.dumps(DEFAULT_TRADER_CONFIG))
+        if TRADER_CONFIG_FILE.exists():
+            try:
+                data = json.loads(TRADER_CONFIG_FILE.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    raise ValueError("config must be an object")
                 for key, val in data.items():
                     if key == "risk" and isinstance(val, dict):
                         cfg["risk"].update(val)
                     else:
                         cfg[key] = val
-        except (json.JSONDecodeError, OSError):
-            pass  # 配置损坏时退回默认值，不让交易进程崩掉
-    else:
-        try:
-            save_trader_config(cfg)
-        except OSError:
-            pass
-    return cfg
+                validate_trader_config(cfg)
+            except (json.JSONDecodeError, OSError, TypeError, ValueError):
+                return json.loads(json.dumps(_LAST_VALID or DEFAULT_TRADER_CONFIG))
+        else:
+            try:
+                save_trader_config(cfg)
+            except (OSError, TypeError, ValueError):
+                pass
+        _LAST_VALID = json.loads(json.dumps(cfg))
+        return cfg
 
 
 def save_trader_config(cfg: dict) -> None:
-    TRADER_CONFIG_FILE.write_text(
-        json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    global _LAST_VALID
+    with CONFIG_LOCK:
+        validate_trader_config(cfg)
+        _atomic_json_write(TRADER_CONFIG_FILE, cfg)
+        _LAST_VALID = json.loads(json.dumps(cfg))
 
 
 _TRADER = load_trader_config()
@@ -157,6 +262,7 @@ class Config:
     MAX_LOT_PER_TRADE = float(_TRADER.get("max_lot_per_trade", 1.0))
 
     # ── 文件路径 ────────────────────────────────────────────
+    ROOT_DIR = ROOT_DIR
     STRATEGY_FILE = "best_mt5_strategy.json"
     CHECKPOINT_DIR = "checkpoints"
     PORTFOLIO_FILE = "portfolio_state.json"

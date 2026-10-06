@@ -2,6 +2,10 @@ import torch
 from .ops import OPS_CONFIG
 from .vocab import FORMULA_VOCAB
 
+NORMALIZATION_VERSION = "causal-prefix-rolling500-v2"
+LEGACY_NORMALIZATION_VERSION = "legacy-v1"
+NORMALIZATION_WINDOW = 500
+
 # ── 恒正算子集 ────────────────────────────────────────────────────────────
 # 这些算子输出值域非负（或几乎恒正），连续使用会丢失符号信息，
 # 导致因子退化成「永远做多」的 beta 因子。
@@ -139,7 +143,10 @@ def validate_formula_structure(formula_tokens: list[int], vocab_names: tuple[str
 
 
 class StackVM:
-    def __init__(self):
+    def __init__(self, normalization_version: str = NORMALIZATION_VERSION):
+        if normalization_version not in (NORMALIZATION_VERSION, LEGACY_NORMALIZATION_VERSION):
+            raise ValueError(f"Unknown normalization version: {normalization_version}")
+        self.normalization_version = normalization_version
         # feat_offset 动态从 FORMULA_VOCAB.operator_offset 读取（= feature_count = F）。
         self.feat_offset = FORMULA_VOCAB.operator_offset
         # op_map / arity_map 动态从 OPS_CONFIG 构建。
@@ -153,10 +160,44 @@ class StackVM:
 
     @staticmethod
     def _normalize_output(x: torch.Tensor) -> torch.Tensor:
-        """
-        对因子输出做标准化，确保幅度足够触发 neutral band 入场。
+        """Causal prefix normalization with a fixed 500-bar warmup.
 
-        策略（两级降级，全部因果）：
+        For a single symbol, bars 1..499 are neutral and bar 500 is the
+        first eligible output. The constant gate is prefix-only, so appending
+        future observations cannot alter an earlier result.
+        """
+        n, length = x.shape
+        if length == 0:
+            return x.clone()
+        if n > 1:
+            cs_std = x.std(dim=0, keepdim=True).clamp(min=1e-8)
+            return ((x - x.mean(dim=0, keepdim=True)) / cs_std).clamp(-3.0, 3.0)
+        out = torch.zeros_like(x)
+        if length < NORMALIZATION_WINDOW:
+            return out
+        windows = x.unfold(1, NORMALIZATION_WINDOW, 1)
+        tail = x[:, NORMALIZATION_WINDOW - 1:]
+        z = ((tail - windows.mean(dim=-1)) /
+             windows.std(dim=-1).clamp(min=1e-8)).clamp(-3.0, 3.0)
+        centered = x.double() - x[:, :1].double()
+        count = torch.arange(1, length + 1, device=x.device, dtype=torch.float64)
+        csum = centered.cumsum(dim=1)
+        csum_sq = centered.square().cumsum(dim=1)
+        variance = ((csum_sq - csum.square() / count) /
+                    (count - 1).clamp(min=1)).clamp(min=0)
+        constant = variance < 1e-12
+        out[:, NORMALIZATION_WINDOW - 1:] = torch.where(
+            constant[:, NORMALIZATION_WINDOW - 1:], tail, z
+        )
+        return out
+
+    @staticmethod
+    def _normalize_output_legacy(x: torch.Tensor) -> torch.Tensor:
+        """
+        Legacy deployed-strategy behavior. The global constant test is NOT
+        causal and must never be used for new training or quick backtests.
+
+        Original normalization branches retained for compatibility:
         1. 截面 zscore（跨品种，每时间步）：适合因子跨品种有分散
         2. 滚动时序 zscore（每品种，固定窗口 500，无 look-ahead）
 
@@ -244,7 +285,10 @@ class StackVM:
             if len(stack) == 1:
                 result = stack[0]
                 # 最终输出标准化：保证因子幅度足够，避免全程空仓
-                return self._normalize_output(result)
+                normalize = (self._normalize_output_legacy
+                             if self.normalization_version == LEGACY_NORMALIZATION_VERSION
+                             else self._normalize_output)
+                return normalize(result)
             else:
                 return None
         except Exception:

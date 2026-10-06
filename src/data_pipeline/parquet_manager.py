@@ -3,7 +3,9 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+import hashlib
 
+import numpy as np
 import pandas as pd
 import torch
 from loguru import logger
@@ -112,6 +114,41 @@ def parse_parquet_filename(path: str | Path) -> tuple[str, str]:
     return symbol, timeframe
 
 
+def validate_training_frame(df: pd.DataFrame) -> pd.DataFrame:
+    """Canonicalize then validate every retained bar, including post-dedup count."""
+    volume_col = "tick_volume" if "tick_volume" in df.columns else "volume"
+    required = ["time", "open", "high", "low", "close", volume_col]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise ValueError(f"Parquet missing columns: {missing}")
+    sub = df[required].copy().rename(columns={volume_col: "volume"})
+    for column in sub.columns:
+        sub[column] = pd.to_numeric(sub[column], errors="raise")
+    if not np.isfinite(sub["time"].to_numpy(dtype="float64")).all():
+        raise ValueError("Training timestamps must be finite")
+    if len(sub) and sub["time"].max() < 10_000_000:
+        sub["time"] *= 1000
+    sub = sub.sort_values("time", kind="stable").drop_duplicates("time", keep="last")
+    if len(sub) < Config.MIN_BARS:
+        raise ValueError(f"Insufficient unique bars: {len(sub)} (need {Config.MIN_BARS})")
+    values = sub.to_numpy(dtype="float64")
+    if not np.isfinite(values).all():
+        raise ValueError("Training OHLC/volume must be finite")
+    if (sub["time"] <= 0).any() or (sub["time"] >= 2**63).any() or (sub["time"] != np.floor(sub["time"])).any():
+        raise ValueError("Training timestamps must be positive int64 seconds")
+    prices = sub[["open", "high", "low", "close"]]
+    if (prices <= 0).any().any() or (prices > np.finfo(np.float32).max).any().any():
+        raise ValueError("Training OHLC must be positive finite float32 prices")
+    if (prices.to_numpy(dtype=np.float32) <= 0).any():
+        raise ValueError("Training OHLC underflows float32")
+    if ((sub["high"] < prices.max(axis=1)) | (sub["low"] > prices.min(axis=1))).any():
+        raise ValueError("Training OHLC high/low bounds are inconsistent")
+    if (sub["volume"] < 0).any() or (sub["volume"] > np.finfo(np.float32).max).any():
+        raise ValueError("Training volume must be nonnegative finite float32")
+    sub["time"] = sub["time"].astype("int64")
+    return sub.reset_index(drop=True)
+
+
 def inspect_parquet_file(path: str | Path) -> dict[str, Any]:
     p = Path(path)
     if not p.exists():
@@ -120,12 +157,8 @@ def inspect_parquet_file(path: str | Path) -> dict[str, Any]:
         raise ValueError("请选择 .parquet 文件")
 
     symbol, timeframe = parse_parquet_filename(p)
-    df = pd.read_parquet(p)
+    df = validate_training_frame(pd.read_parquet(p))
     bars = len(df)
-    if bars < Config.MIN_BARS:
-        raise ValueError(
-            f"数据不足: {bars} bars（至少需要 {Config.MIN_BARS}）"
-        )
 
     # 从实际时间跨度计算年数（适用于所有周期，比固定公式更准确）
     years = None
@@ -163,32 +196,12 @@ class ParquetDataManager:
         self._target_ret: torch.Tensor | None = None
 
     def load(self) -> None:
-        df = pd.read_parquet(self.file_path)
-        if len(df) < Config.MIN_BARS:
-            raise ValueError(
-                f"数据不足: {len(df)} bars（至少需要 {Config.MIN_BARS}）"
-            )
-
-        volume_col = "tick_volume" if "tick_volume" in df.columns else "volume"
-        required = ["time", "open", "high", "low", "close", volume_col]
-        missing = [c for c in required if c not in df.columns]
-        if missing:
-            raise ValueError(f"Parquet 缺少列: {missing}")
-
-        sub = df[required].copy().rename(columns={volume_col: "volume"})
-
-        # 兼容性修复：某些 A 股 parquet 导出工具把 Unix 秒时间戳误存为
-        # "秒/1000"（数值被缩小 1000 倍，导致日期变成 1970 年）。
-        # 若最大时间戳 < 1e7（1970-04-27 之前），则视为被除过 1000，乘回。
-        if pd.api.types.is_numeric_dtype(sub["time"]) and sub["time"].max() < 10_000_000:
-            sub["time"] = sub["time"] * 1000
-            logger.info(
-                f"[数据] {self.file_path.name} 时间戳被识别为秒/1000，"
-                f"已乘 1000 恢复为 Unix 秒。"
-            )
-
-        sub = sub.sort_values("time")
-        sub = sub[~sub["time"].duplicated(keep="last")]
+        sub = validate_training_frame(pd.read_parquet(self.file_path))
+        # Fingerprint normalized content at source precision, not file metadata
+        # or float32 model inputs (which can hide small refreshed-price changes).
+        self.content_fingerprint = hashlib.sha256(
+            pd.util.hash_pandas_object(sub, index=False).values.tobytes()
+        ).hexdigest()
 
         rows = {field: sub[field].values for field in ["open", "high", "low", "close", "volume"]}
         import numpy as np

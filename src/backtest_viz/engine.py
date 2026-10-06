@@ -1,8 +1,10 @@
 """
 backtest_viz/engine.py — 逐 bar 可视化回测引擎
 
-与训练用 backtest.py 共享相同的信号逻辑（tanh 连续仓位），
-但额外记录每笔交易的开平仓细节，供图表标注使用。
+Signal conversion is shared with training (continuous tanh exposure with
+neutral band). Results are log-return/cost proxies, not fixed-lot Bid/Ask
+fills. The last two signals have no observable open-to-open return and are
+not opened; any remaining exposure is liquidated at the final observed open.
 """
 from __future__ import annotations
 
@@ -14,7 +16,8 @@ import numpy as np
 import torch
 
 from model_core.vm import StackVM
-from strategy_manager.signal import target_to_direction
+from strategy_manager.signal import compute_target_positions_stateless, target_to_direction
+from model_core.backtest import MT5Backtest, SCORING_SEMANTICS
 
 _H1_PERIODS_PER_YEAR = 6240
 
@@ -57,6 +60,10 @@ class SymbolResult:
     max_drawdown: float          = 0.0
     avg_hold_bars:float          = 0.0
     profit_loss_ratio: float | None = None  # 盈亏比 = 平均盈利 / 平均亏损
+    pnl_semantics: str = SCORING_SEMANTICS
+    execution_basis: str = "next_open_to_open_proxy_final_open_liquidation"
+    valid_return_bars: int = 0
+    final_close_cost: float = 0.0
 
 
 class BacktestEngine:
@@ -70,11 +77,11 @@ class BacktestEngine:
     def __init__(
         self,
         formula:         list[int],
-        cost_rate:       float = 0.0001,
+        cost_rate:       float | None = None,
         periods_per_year:int   = _H1_PERIODS_PER_YEAR,
     ):
         self.formula          = formula
-        self.cost_rate        = cost_rate
+        self.cost_rate        = MT5Backtest(cost_rate=cost_rate).cost_rate
         self.periods_per_year = periods_per_year
         self.vm               = StackVM()
 
@@ -125,9 +132,12 @@ class BacktestEngine:
 
         # numpy 转换（便于后续图表处理）
         factor_np   = factor_1d.detach().float().numpy()
-        # 连续仓位模式：tanh 直接作为仓位比例，与训练 backtest.py 完全一致
+        # Shared continuous exposure and neutral band, with explicit tail liquidation.
         signal_np   = np.tanh(factor_np)
-        position_np = signal_np
+        position_np = compute_target_positions_stateless(factor_1d).detach().cpu().numpy().copy()
+        # Only signal bars with an observable open[t+1] -> open[t+2] return.
+        valid_bars = max(0, T - 2)
+        position_np[valid_bars:] = 0.0
 
         open_np   = raw_dict["open"].float().numpy()
         high_np   = raw_dict["high"].float().numpy()
@@ -152,8 +162,12 @@ class BacktestEngine:
         prev_pos[1:] = position_np[:-1]
         turnover = np.abs(position_np - prev_pos)
 
+        final_close_cost = float(abs(position_np[valid_bars - 1]) * self.cost_rate) if valid_bars else 0.0
+        # Liquidation is booked in the first invalid-return slot, at the last open.
         pnl_np    = position_np * target_ret - turnover * self.cost_rate
         cum_pnl   = np.cumsum(pnl_np)
+        path = np.concatenate(([0.0], cum_pnl))
+        max_drawdown = float((np.maximum.accumulate(path) - path).max())
 
         # ── 提取交易记录 ──────────────────────────────────────────────
         trades = self._extract_trades(
@@ -195,7 +209,9 @@ class BacktestEngine:
             total_return = total_return,
             n_trades     = n_trades,
             win_rate     = win_rate,
-            max_drawdown = 0.0,
+            max_drawdown = max_drawdown,
+            valid_return_bars = valid_bars,
+            final_close_cost = final_close_cost,
             avg_hold_bars= avg_hold,
             profit_loss_ratio = pl_ratio,
         )
@@ -244,7 +260,8 @@ class BacktestEngine:
             if new_dir != current_dir:
                 # 平掉旧仓
                 if current_dir != 0:
-                    trade_pnl = float(pnl[entry_bar:t].sum())
+                    close_end = t + 1 if new_dir == 0 else t
+                    trade_pnl = float(pnl[entry_bar:close_end].sum())
                     cum_pnl_total += trade_pnl
                     trade = Trade(
                         symbol      = symbol,
@@ -287,15 +304,10 @@ class BacktestEngine:
     # ─────────────────────────────────────────────────────────────────────
 
     def _calc_sortino(self, pnl: np.ndarray) -> float:
-        mean_pnl = float(np.mean(pnl))
-        downside = pnl[pnl < 0]
-        if len(downside) == 0:
+        if len(pnl) == 0:
             return 0.0
-        ds_std = float(np.std(downside, ddof=0))
-        floor  = max(abs(mean_pnl), 1e-8)
-        ds_std = max(ds_std, floor)
-        sortino = mean_pnl / ds_std * math.sqrt(self.periods_per_year)
-        return float(np.clip(sortino, -20.0, 20.0))
+        scorer = MT5Backtest(cost_rate=self.cost_rate, periods_per_year=self.periods_per_year)
+        return float(scorer._sortino(torch.as_tensor(pnl)).item())
 
     @staticmethod
     def _calc_profit_loss_ratio(trades: list[Trade]) -> float | None:

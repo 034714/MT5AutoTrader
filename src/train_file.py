@@ -13,7 +13,6 @@ training_history_{品种}_{周期}.json），不同周期互不覆盖。
 """
 from __future__ import annotations
 
-import glob as _glob
 import json
 import pathlib
 import random
@@ -30,7 +29,8 @@ configure_train_stdio()
 from config import Config
 from data_pipeline.parquet_manager import ParquetDataManager, inspect_parquet_file
 from model_core.config import ModelConfig
-from model_core.engine import AlphaEngine
+from model_core.engine import AlphaEngine, _current_scoring_version, _feature_semantics_version, save_strategy_artifact
+from utils.training_artifacts import checkpoint_dir, history_path, latest_checkpoint, root_path, strategy_path
 from model_core.vocab import VOCAB_VERSION
 
 
@@ -55,8 +55,7 @@ def _seed_rng(seed: int | None) -> int:
 
 
 def _latest_ckpt(tag: str) -> Path | None:
-    files = sorted(_glob.glob(str(pathlib.Path("checkpoints") / f"ckpt_{tag}_step_*.pt")))
-    return Path(files[-1]) if files else None
+    return latest_checkpoint(f"ckpt_{tag}_step_*.pt")
 
 
 def train_from_file(
@@ -64,7 +63,7 @@ def train_from_file(
     resume_file: str | None = None, seed: int | None = None,
 ) -> AlphaEngine | None:
     # 清掉旧的「停止训练」信号（引擎只读不删，避免岛模式后跑的岛吞掉信号）
-    stop_flag = pathlib.Path("TRAIN_STOP")
+    stop_flag = root_path("TRAIN_STOP")
     try:
         stop_flag.unlink(missing_ok=True)
     except OSError:
@@ -112,13 +111,13 @@ def train_from_file(
     start_step = 0
     if from_scratch:
         removed = 0
-        for p in _glob.glob(str(pathlib.Path("checkpoints") / f"ckpt_{tag}_step_*.pt")):
+        for p in checkpoint_dir().glob(f"ckpt_{tag}_step_*.pt"):
             try:
                 pathlib.Path(p).unlink(missing_ok=True)
                 removed += 1
             except OSError as e:
                 print(f"  [警告] 无法删除检查点 {p}: {e}")
-        hist_path = pathlib.Path(f"training_history_{tag}.json")
+        hist_path = history_path(tag)
         if hist_path.exists():
             try:
                 hist_path.unlink()
@@ -129,10 +128,14 @@ def train_from_file(
         _seed_best_from_strategy(engine, symbol, timeframe)
     elif resume_file:
         rp = pathlib.Path(resume_file)
+        if not rp.is_absolute():
+            rp = root_path(rp)
         if rp.exists():
             try:
                 start_step = engine.load_checkpoint(str(rp))
                 print(f"  [续训] 从指定检查点 {rp.name} 恢复，起始步={start_step}")
+            except ValueError:
+                raise
             except Exception as e:
                 print(f"  [警告] 检查点加载失败: {e}，将从头开始")
         else:
@@ -147,6 +150,8 @@ def train_from_file(
             try:
                 start_step = engine.load_checkpoint(str(latest))
                 print(f"  [续训] 从 {latest} 恢复，起始步={start_step}")
+            except ValueError:
+                raise
             except Exception as e:
                 print(f"  [警告] 检查点加载失败: {e}，将从头开始")
 
@@ -165,7 +170,7 @@ def train_from_file(
         return engine
 
     if start_step == 0 and not from_scratch:
-        hist_path = pathlib.Path(f"training_history_{tag}.json")
+        hist_path = history_path(tag)
         if hist_path.exists():
             hist_path.unlink()
         print("  [新训] 从第 0 步开始")
@@ -179,10 +184,8 @@ def train_from_file(
 
 
 def _seed_best_from_strategy(engine: AlphaEngine, symbol: str, timeframe: str | None = None) -> None:
-    """把已有 best_{symbol}_{tf}.json（或旧版 best_{symbol}.json）当作重新训练的分数下限。"""
-    path = pathlib.Path("strategies") / f"best_{file_tag(symbol, timeframe)}.json"
-    if not path.exists() and timeframe:
-        path = pathlib.Path("strategies") / f"best_{symbol}.json"  # 兼容旧命名
+    """Seed only a finite champion scored on this exact data/evaluation context."""
+    path = strategy_path(symbol, timeframe)
     if not path.exists():
         return
     try:
@@ -190,8 +193,9 @@ def _seed_best_from_strategy(engine: AlphaEngine, symbol: str, timeframe: str | 
     except (json.JSONDecodeError, OSError) as e:
         print(f"  [警告] 读取已有策略失败: {e}")
         return
-    from model_core.backtest import SCORING_VERSION
-    if data.get("scoring_version") != SCORING_VERSION:
+    if (data.get("scoring_version") != _current_scoring_version()
+            or data.get("feature_semantics_version") != _feature_semantics_version()
+            or data.get("training_context") != engine.training_context()):
         print(f"  [评分隔离] 不继承旧策略分数；保留原文件 {path}")
         return
     formula = data.get("formula")
@@ -199,6 +203,9 @@ def _seed_best_from_strategy(engine: AlphaEngine, symbol: str, timeframe: str | 
     if not formula or score is None:
         return
     try:
+        import math
+        if not math.isfinite(float(score)):
+            return
         engine.best_formula = [int(t) for t in formula]
         engine.best_score = float(score)
         print(f"  [重新训练] 保留已有最优分数下限={engine.best_score:.4f}，仅更好时才会覆盖策略文件")
@@ -207,57 +214,30 @@ def _seed_best_from_strategy(engine: AlphaEngine, symbol: str, timeframe: str | 
 
 
 def _save_strategy(engine: AlphaEngine, symbol: str, timeframe: str, data_file: str) -> None:
-    from model_core.engine import _strategy_write_allowed
-    from model_core.backtest import SCORING_VERSION
-    path = pathlib.Path("strategies") / f"best_{file_tag(symbol, timeframe)}.json"
-    if engine.best_formula is None or not _strategy_write_allowed(str(path)):
-        print(f"  [策略保护] 无合格新冠军或旧口径不可比较，未覆盖 {path}；新结果保留在检查点中")
-        return
-    path.parent.mkdir(exist_ok=True)
-    # 若磁盘上已有更高分，不要用更弱结果覆盖
-    if path.exists() and engine.best_formula is not None:
-        try:
-            old = json.loads(path.read_text(encoding="utf-8"))
-            old_score = old.get("best_score")
-            if old_score is not None and float(old_score) > float(engine.best_score):
-                print(
-                    f"  [策略] 保留磁盘更优结果 {float(old_score):.4f} "
-                    f"> 本次 {float(engine.best_score):.4f}，未覆盖 {path}"
-                )
-                merged = dict(old)
-                for key, val in (
-                    ("timeframe", timeframe),
-                    ("data_file", str(Path(data_file).resolve())),
-                    ("mode", "parquet_file"),
-                    ("train_steps", ModelConfig.TRAIN_STEPS),
-                ):
-                    if val is not None and not merged.get(key):
-                        merged[key] = val
-                if merged != old:
-                    path.write_text(
-                        json.dumps(merged, indent=2, ensure_ascii=False),
-                        encoding="utf-8",
-                    )
-                    print(f"  [策略] 已补全数据路径等元数据: {path}")
-                return
-        except (json.JSONDecodeError, OSError, TypeError, ValueError):
-            pass
+    path = strategy_path(symbol, timeframe)
+    context = engine.training_context()
+    for key, expected in (("symbol", symbol), ("timeframe", timeframe)):
+        if context.get(key) is not None and context[key] != expected:
+            raise ValueError(f"Strategy {key} conflicts with training context")
+        context[key] = expected
     data = {
-        "scoring_version": SCORING_VERSION,
+        "scoring_version": _current_scoring_version(),
+        "feature_semantics_version": _feature_semantics_version(),
         "vocab_version": VOCAB_VERSION,
         "symbol": symbol,
         "timeframe": timeframe,
+        "training_context": context,
         "data_file": str(Path(data_file).resolve()),
         "mode": "parquet_file",
         "formula": engine.best_formula,
-        "formula_decoded": engine._decode_formula(engine.best_formula)
-        if engine.best_formula
-        else None,
+        "formula_decoded": engine._decode_formula(engine.best_formula),
         "best_score": engine.best_score,
         "train_steps": ModelConfig.TRAIN_STEPS,
     }
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-    print(f"  策略已保存: {path}")
+    if save_strategy_artifact(path, data):
+        print(f"  策略已保存: {path}")
+    else:
+        print(f"  [策略保护] 未覆盖 {path}；无新冠军、旧口径或不同上下文受保护")
 
 
 if __name__ == "__main__":

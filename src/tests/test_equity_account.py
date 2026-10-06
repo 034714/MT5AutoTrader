@@ -46,6 +46,20 @@ class EquityAccountTests(unittest.TestCase):
         self.ai.balance = 105.
         self.assertEqual(app.api_equity_history()['history'][-1][1], 105.)
 
+    def test_days_param_limits_history_window(self):
+        calls = []
+        def record(*args):
+            calls.append(args)
+            return self.deals
+        self.mt5.history_deals_get = record
+        app.api_equity_history(days=7)
+        self.assertEqual(len(calls), 1)
+        frm, to = calls[0]
+        self.assertGreaterEqual((to - frm).days, 7)
+        self.assertLessEqual((to - frm).days, 9)  # +1 day 边沿
+        self.assertEqual(app.api_equity_history(days=900)["days"], 365)
+        self.assertEqual(app.api_equity_history(days=0)["days"], 90)  # 0=未传，回退默认
+
     def test_disconnected_clears_previous_account(self):
         app.api_equity_history()
         self.ai = None

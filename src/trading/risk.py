@@ -14,6 +14,7 @@ trading/risk.py — 实时风控（初始止损 + 阶梯保本止损）
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 from loguru import logger
 
 from trading.mt5_client import MT5Client
@@ -45,15 +46,27 @@ class RiskParams:
 
 
 def initial_stop_price(direction: str, open_price: float, stop_loss_pct: float) -> float:
-    """初始止损价。多头：open*(1+pct)（pct=-0.02 → open*0.98）；空头：open*(1-pct)。"""
-    if direction == "BUY":
-        return open_price * (1.0 + stop_loss_pct)
-    return open_price * (1.0 - stop_loss_pct)
+    """初始止损价；拒绝非有限或非正输入。"""
+    try:
+        values = tuple(float(v) for v in (open_price, stop_loss_pct))
+    except (TypeError, ValueError):
+        return 0.0
+    if direction not in ("BUY", "SELL") or not all(
+        math.isfinite(v) for v in values
+    ) or values[0] <= 0:
+        return 0.0
+    open_price, stop_loss_pct = values
+    value = open_price * (1.0 + stop_loss_pct if direction == "BUY" else 1.0 - stop_loss_pct)
+    return value if math.isfinite(value) and value > 0 else 0.0
 
 
 def profit_pct(direction: str, open_price: float, bid: float, ask: float) -> float:
-    """当前浮盈比例。多头按 bid（可卖出价）、空头按 ask（可买回价）。"""
-    if open_price <= 0:
+    """当前浮盈比例；无效行情返回 0。"""
+    try:
+        values = tuple(float(v) for v in (open_price, bid, ask))
+    except (TypeError, ValueError):
+        return 0.0
+    if direction not in ("BUY", "SELL") or not all(math.isfinite(v) for v in values) or open_price <= 0:
         return 0.0
     if direction == "BUY":
         return (bid - open_price) / open_price
@@ -76,6 +89,9 @@ def ladder_lock(
         (目标锁定利润 or None, 命中的最高档位索引)。
         目标为 None 表示没有可新触发的档位。
     """
+    if not math.isfinite(float(profit)) or not math.isfinite(float(already_locked)) or \
+            any(not math.isfinite(float(v)) for pair in levels for v in pair):
+        return None, -1
     ordered = sorted(levels, key=lambda x: float(x[0]))
     best_lock: float | None = None
     best_idx = -1
@@ -99,8 +115,13 @@ def lock_price(direction: str, open_price: float, lock_pct: float) -> float:
 
 def implied_lock_pct(direction: str, open_price: float, sl_price: float) -> float:
     """由止损价反推实际锁定的利润比例（用于如实记录状态）。"""
-    if open_price <= 0 or sl_price <= 0:
+    try:
+        values = tuple(float(v) for v in (open_price, sl_price))
+    except (TypeError, ValueError):
         return LOCK_NONE
+    if not all(math.isfinite(v) for v in values) or values[0] <= 0 or values[1] <= 0:
+        return LOCK_NONE
+    open_price, sl_price = values
     pct = (sl_price - open_price) / open_price
     return pct if direction == "BUY" else -pct
 
@@ -143,9 +164,19 @@ class RiskManager:
         if not self.params.enable_price_monitor:
             return False, already_locked, None
 
+        try:
+            inputs = [open_price, current_sl, already_locked, self.params.stop_loss_pct]
+            inputs.extend(v for pair in self.params.breakeven_levels for v in pair)
+            if direction not in ("BUY", "SELL") or open_price <= 0 or current_sl < 0 or \
+                    not all(math.isfinite(float(v)) for v in inputs):
+                return False, already_locked, "invalid_input"
+        except (TypeError, ValueError):
+            return False, already_locked, "invalid_input"
         tick = self.client.get_tick(symbol)
         if tick is None:
             return False, already_locked, "no_tick"
+        if any(not math.isfinite(float(tick[k])) or tick[k] <= 0 for k in ("bid", "ask")):
+            return False, already_locked, "invalid_tick"
 
         profit = profit_pct(direction, open_price, tick["bid"], tick["ask"])
 
@@ -180,7 +211,7 @@ class RiskManager:
 
         # ── 3. 券商最小止损距离约束 ─────────────────────────
         final_sl = self._respect_stops_level(symbol, direction, tick, desired)
-        if final_sl is None:
+        if final_sl is None or not math.isfinite(final_sl) or final_sl <= 0:
             return False, already_locked, "stops_level"
         # 钳制后仍不得比当前止损更松
         if current_sl > 0 and self._tighter_or_equal(direction, current_sl, final_sl) \
@@ -226,6 +257,9 @@ class RiskManager:
         client = self.client
         stops_points = client.stops_level_points(symbol)
         point = client.point(symbol)
+        if not all(math.isfinite(float(v)) for v in (stops_points, point)) or \
+                stops_points < 0 or point < 0:
+            return None
         if stops_points <= 0 or point <= 0:
             return desired
         min_dist = stops_points * point

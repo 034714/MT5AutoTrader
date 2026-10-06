@@ -18,6 +18,8 @@ import pandas as pd
 
 from config import Config
 from train_file import train_from_file
+from data_pipeline.parquet_manager import validate_training_frame
+from utils.training_artifacts import atomic_write, root_path
 
 _SUPPORTED_TF = ("M5", "M15", "M30", "H1", "H4", "D1")
 
@@ -32,18 +34,15 @@ def fetch_mt5(symbol: str, bars: int, timeframe: str, output_dir: Path) -> Path:
         if mt5.symbol_info(symbol) is None:
             raise RuntimeError(f"MT5 不认识品种: {symbol}")
         mt5.symbol_select(symbol, True)
-        rates = mt5.copy_rates_from_pos(symbol, Config.get_timeframe(tf), 0, int(bars))
+        rates = mt5.copy_rates_from_pos(symbol, Config.get_timeframe(tf), 1, int(bars))
         if rates is None or len(rates) == 0:
             raise RuntimeError(f"读取 {symbol} {tf} K线失败: {mt5.last_error()}")
-        columns = ["time", "open", "high", "low", "close", "tick_volume"]
-        frame = pd.DataFrame(rates)
-        frame = frame[[c for c in columns if c in frame.columns]].copy()
-        frame["time"] = frame["time"].astype("int64")
-        if "tick_volume" in frame.columns:
-            frame["tick_volume"] = frame["tick_volume"].astype("int64")
-        output_dir.mkdir(parents=True, exist_ok=True)
+        frame = validate_training_frame(pd.DataFrame(rates)).rename(columns={"volume": "tick_volume"})
+        output_dir = Path(output_dir)
+        if not output_dir.is_absolute():
+            output_dir = root_path(output_dir)
         path = output_dir / f"{symbol}_{tf}.parquet"
-        frame.to_parquet(path, index=False)
+        atomic_write(path, lambda tmp: frame.to_parquet(tmp, index=False))
         print(f"[MT5] 已读取 {len(frame):,} 根 {symbol} {tf} K线")
         print(f"[MT5] 数据已保存: {path}")
         return path

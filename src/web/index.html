@@ -433,7 +433,7 @@ function applyMaterial(v) {
               <option value="3">岛模式 ×3（抗停滞，耗时×3）</option>
               <option value="5">岛模式 ×5（抗停滞，耗时×5）</option>
             </select></div>
-            <div class="field-help">岛模式：多个种群同时探索、定期交换精英公式，专治"分数卡住不涨"。支持从最近一次完整迁移阶段续训，耗时约为单引擎的岛数倍；若连续多个停滞窗口仍无进步会自动结束并保留当前最优。训练结束后最优岛会自动导出为普通检查点——之后切回单引擎即可接着岛模式的成果继续练。</div>
+            <div class="field-help">岛模式：多个种群同时探索、定期交换精英公式，专治"分数卡住不涨"。完整阶段和中断阶段均可续训，中断时保留各岛实际已完成步数；耗时约为单引擎的岛数倍；若连续多个停滞窗口仍无进步会自动结束并保留当前最优。训练结束后最优岛会自动导出为普通检查点——之后切回单引擎即可接着岛模式的成果继续练。</div>
             <div class="row" style="margin-top:8px"><button class="btn small ghost" onclick="loadCheckpoints()">查看/选择续训检查点</button></div>
             <div id="tr-ckpt-box" class="hint" style="margin-top:6px"></div>
           </div>
@@ -618,6 +618,13 @@ function applyMaterial(v) {
     </div>
     <div class="card" style="margin-bottom:14px">
       <h3>账户净值走势</h3>
+      <div class="row"><label>时间范围</label>
+        <select id="eq-days" onchange="reloadEquityChart()">
+          <option value="1">最近 1 天</option>
+          <option value="7" selected>最近 7 天</option>
+          <option value="30">最近 30 天</option>
+          <option value="90">最近 90 天</option>
+        </select></div>
       <canvas id="eq-chart" height="280" style="width:100%;height:280px;background:var(--panel2);border:1px solid var(--border);border-radius:6px"></canvas>
       <div id="eq-legend" class="hint" style="margin-top:6px"></div>
       <div id="eq-chart-meta" class="hint" style="margin-top:2px">历史余额由成交流水推算；在线采样页面开着持续积累。</div>
@@ -714,7 +721,7 @@ function applyMaterial(v) {
     <div id="qb-context" class="hint qb-wrap"></div>
     <div class="section-note" id="qb-safety" style="margin-top:12px">只读取 MT5 历史行情并模拟计算，不发送订单、不修改交易配置。只使用已收盘 K 线，不包含当前形成中的 K 线；历史表现不保证未来收益。</div>
     <form id="qb-form">
-      <div class="row"><label for="qb-symbol">回测品种</label><input type="text" id="qb-symbol" list="mt5-symbol-list" autocomplete="off" required aria-describedby="qb-symbol-note" oninput="quickBacktestSymbolEdited()"><button type="button" class="btn small ghost" onclick="requestQuickBacktestOptions()">读取此品种参数</button></div>
+      <div class="row"><label for="qb-symbol">回测品种</label><input type="text" id="qb-symbol" list="mt5-symbol-list" autocomplete="off" required aria-describedby="qb-symbol-note" oninput="quickBacktestSymbolEdited()"><button type="button" class="btn small ghost" id="qb-symbol-read" onclick="requestQuickBacktestOptions()">读取此品种参数</button></div>
       <div id="qb-symbol-note" class="field-help">正在读取策略记录品种与当前 MT5 可选品种…</div>
       <div class="row"><label for="qb-bars">最近已收盘根数</label><input type="number" id="qb-bars" step="1" required disabled aria-describedby="qb-bars-help"></div>
       <div id="qb-bars-help" class="field-help">正在读取允许范围…</div>
@@ -763,15 +770,31 @@ function applyMaterial(v) {
 // ── 基础工具 ──────────────────────────────────────────────
 const $ = id => document.getElementById(id);
 async function api(path, opts) {
-  const res = await fetch(path, Object.assign({
-    headers: { "Content-Type": "application/json" }
-  }, opts || {}));
-  let data = null;
-  try { data = await res.json(); } catch (e) { /* ignore */ }
-  if (!res.ok) throw new Error((data && data.detail) || ("HTTP " + res.status));
-  return data;
+  const options = Object.assign({ headers: { "Content-Type": "application/json" } }, opts || {});
+  const safeGet = !options.method || options.method === "GET";
+  const controller = safeGet ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), 20000) : null;
+  if (controller) options.signal = controller.signal;
+  try {
+    const res = await fetch(path, options);
+    let data = null;
+    try { data = await res.json(); } catch (e) { /* invalid JSON */ }
+    if (!res.ok) throw new Error((data && data.detail) || ("HTTP " + res.status));
+    return data;
+  } finally { if (timer) clearTimeout(timer); }
+}
+function confirmationAccount() {
+  if (!lastStatus || !lastStatus.account || Date.now() - statusReceivedAt > 15000) {
+    throw new Error("账户状态已过期，请刷新总览后重新确认");
+  }
+  return [String(lastStatus.account.server || ""), lastStatus.account.login, String(lastStatus.account.currency || "")];
+}
+function accountPayload(key, extra) {
+  if (!key) throw new Error("未确认当前账户，请刷新总览后重试");
+  return Object.assign({ account_key: key, confirmed: true }, extra || {});
 }
 function showMsg(id, text, ok) {
+
   const el = $(id);
   el.textContent = text;
   el.className = "msg " + (ok ? "ok" : "err");
@@ -915,6 +938,8 @@ function drawSeriesChart(canvas, series, opts) {
 let _confirmCb = null;
 let _confirmInputs = null;
 function askConfirm(title, text, cb, inputs) {
+    const account_key = lastStatus && lastStatus.account && Date.now() - statusReceivedAt <= 15000
+    ? [String(lastStatus.account.server || ""), lastStatus.account.login, String(lastStatus.account.currency || "")] : null;
   $("ov-title").textContent = title;
   $("ov-text").textContent = text;
   const box = $("ov-inputs");
@@ -938,7 +963,12 @@ function askConfirm(title, text, cb, inputs) {
   } else {
     box.style.display = "none";
   }
-  _confirmCb = cb;
+  _confirmCb = vals => {
+    if (account_key && (Date.now() - statusReceivedAt > 15000 || JSON.stringify(account_key) !== JSON.stringify(lastStatus && lastStatus.account_key))) {
+      alert("账户已切换，请重新确认"); return;
+    }
+    return cb(vals, account_key);
+  };
   $("overlay").style.display = "flex";
 }
 function hideOverlay() { $("overlay").style.display = "none"; _confirmCb = null; _confirmInputs = null; }
@@ -948,7 +978,10 @@ $("ov-ok").onclick = () => {
   if (!cb) return;
   if (inputs && inputs.length) {
     const vals = {};
-    inputs.forEach(it => { vals[it.key] = parseFloat($("ov-in-" + it.key).value); });
+    inputs.forEach(it => {
+      const raw = $("ov-in-" + it.key).value.trim();
+      vals[it.key] = raw === "" ? null : Number(raw);
+    });
     cb(vals);
   } else {
     cb();
@@ -972,6 +1005,10 @@ document.querySelectorAll("nav button[data-tab]").forEach(btn => {
 
 // ── 总览轮询 ──────────────────────────────────────────────
 let lastStatus = null;
+let statusReceivedAt = 0;
+let statusRequestId = 0;
+let historyRequestId = 0;
+let pendingRequestId = 0;
 let equityAccountKey = null;
 let equityRequestId = 0;
 function accountKey(account) {
@@ -989,18 +1026,27 @@ function clearEquityChart(message) {
   const meta = $("eq-chart-meta");
   if (meta) meta.textContent = message;
 }
-async function refreshStatus() {
-  if (document.hidden) return;
+async function refreshStatus(force = false) {
+  if (document.hidden && !force) return;
   let st;
-  try { st = await api("/api/status"); }
+  const request = ++statusRequestId;
+  try { st = await api("/api/status"); if (request !== statusRequestId) return; }
   catch (e) {
     $("hdr-runner").textContent = "服务未运行"; $("hdr-runner").className = "pill bad";
     return;
   }
   lastStatus = st;
+  statusReceivedAt = Date.now();
   const nextAccountKey = accountKey(st.account);
   if (nextAccountKey !== equityAccountKey) {
     equityAccountKey = nextAccountKey;
+    hideOverlay(); hideSrCtxMenu();
+    clearSRChart();
+    ++historyRequestId; ++pendingRequestId;
+    ["hs-closed", "hs-open", "hs-stats", "pend-list"].forEach(id => { if ($(id)) $(id).replaceChildren(); });
+    ["sltp-sl", "sltp-tp", "sltp-lot"].forEach(id => { if ($(id)) $(id).value = ""; });
+    ++qbState.request; qbState.loading = false; qbState.options = null; qbState.result = null;
+    $("qb-result").hidden = true; qbSymbolReadUI(""); qbBusy();
     invalidateMt5Symbols();
     if (nextAccountKey) ensureMt5Symbols();
     equityRequestId += 1;  // 让旧账户在途响应失效，绝不覆盖新账户图表
@@ -1123,8 +1169,8 @@ async function refreshStatus() {
   const acts = rs.actions || [];
   $("ov-actions").textContent = acts.length ? acts.slice().reverse().map(a => "[" + a.time + "] " + a.action).join("\n") : "暂无动作";
   // 控制页按钮状态
-  $("ctl-start").disabled = runnerOn;
-  $("ctl-stop").disabled = !runnerOn;
+  $("ctl-start").disabled = st.runner_process_alive;
+  $("ctl-stop").disabled = !st.runner_process_alive;
   $("ctl-tolive").disabled = !dry;
   $("ctl-todry").disabled = dry;
   $("ctl-mode").textContent = dry ? "dry-run 演练" : "真实下单";
@@ -1184,13 +1230,35 @@ function qbBusy() {
   $("qb-progress").hidden = !busy;
   $("qb-run").textContent = qbState.running ? "回测计算中…" : "运行回测（不下单）";
 }
+let qbSymbolReadState = "";   // "" | "loading" | "ok"
+function qbSymbolReadUI(state, message) {
+  qbSymbolReadState = state || "";
+  const btn = $("qb-symbol-read");
+  const note = $("qb-symbol-note");
+  if (!btn || !note) return;
+  if (state === "loading") {
+    btn.disabled = true;
+    btn.textContent = "读取中…";
+    note.textContent = "正在读取“" + $("qb-symbol").value.trim() + "”的手数范围与成本参数…";
+  } else if (state === "ok") {
+    btn.disabled = false;
+    btn.textContent = "读取此品种参数";
+    if (message) note.textContent = message;
+  } else {
+    btn.disabled = false;
+    btn.textContent = "读取此品种参数";
+  }
+}
 function requestQuickBacktestOptions() {
+  if (qbSymbolReadState === "loading") return;
   return quickBacktest(qbState.file, $("qb-symbol").value.trim(), true);
 }
 function quickBacktestSymbolEdited() {
   const typed = $("qb-symbol").value.trim();
   if (typed === qbState.symbol && qbState.options && qbState.options.symbol === typed) return;
+  qbSymbolReadUI("", "");
   ++qbState.request;  // 让旧品种的参数请求失效，绝不沿用旧品种的手数/成本范围
+  qbState.loading = false;
   qbState.symbol = "";
   qbState.options = null;
   qbState.result = null;
@@ -1260,6 +1328,7 @@ async function quickBacktest(file, symbol, force) {
   $("qb-status").textContent = "正在读取策略、账户和回测参数…";
   qbBusy();
   showQuickBacktest();
+  qbSymbolReadUI("loading");
   try {
     const raw = await api("/api/backtest/quick/options?strategy_file=" + encodeURIComponent(file) + "&symbol=" + encodeURIComponent(qbState.symbol));
     if (request !== qbState.request) return;
@@ -1272,6 +1341,7 @@ async function quickBacktest(file, symbol, force) {
     qbState.options = o;
     qbState.symbol = o.symbol || qbState.symbol;
     setQuickBacktestSymbol(o.symbol, o.strategy_symbol);
+    qbSymbolReadUI("ok", "已读取“" + (o.symbol || "—") + "”的参数：手数范围 " + qbNumber(o.volume_min, 2) + "–" + qbNumber(o.volume_max, 2) + " 手，步长 " + qbNumber(o.volume_step, 2) + "。可直接运行回测。");
     $("qb-context").textContent = "回测品种：" + (o.symbol || "—") + " · 策略周期：" + (o.timeframe || "—") + " · 账户货币：" + (o.currency || "未提供");
     $("qb-bars").min = o.min_bars;
     $("qb-bars").max = o.max_bars;
@@ -1294,6 +1364,8 @@ async function quickBacktest(file, symbol, force) {
     if (request !== qbState.request) return;
     qbState.options = null;
     qbError("读取回测参数失败：" + e.message);
+    qbSymbolReadUI("", "");
+    $("qb-symbol-note").textContent = "读取失败：请确认该品种在当前 MT5 市场报价中可见，再点一次“读取此品种参数”。";
     $("qb-status").textContent = "请选择当前 MT5 中可见的回测品种后重新读取参数；尚未提交回测。";
   } finally {
     if (request === qbState.request) { qbState.loading = false; qbBusy(); }
@@ -1316,6 +1388,7 @@ async function runQuickBacktest() {
       !$("qb-comm").value.trim() || !Number.isFinite(commission_per_lot_side) || commission_per_lot_side < 0 || commission_per_lot_side > 100000) {
     qbError("滑点必须为 0–10000 点；每手单边佣金必须为 0–100000 账户货币。两项均须填写，可明确填 0。"); return;
   }
+  const request = ++qbState.request, expectedAccount = equityAccountKey;
   qbState.running = true;
   qbState.result = null;
   $("qb-result").hidden = true;
@@ -1323,11 +1396,13 @@ async function runQuickBacktest() {
   qbBusy();
   try {
     const result = await api("/api/backtest/quick", { method: "POST", body: JSON.stringify({ strategy_file: qbState.file, symbol: qbState.symbol, bars, lot, slippage_points, commission_per_lot_side }) });
+    if (request !== qbState.request || expectedAccount !== equityAccountKey) return;
     if (!result || result.ok !== true || !result.summary || !Number.isFinite(result.summary.net_profit)) throw new Error((result && (result.error || result.message)) || "回测接口未返回有效结果");
     qbState.result = result;
     renderQuickBacktest(result);
     $("qb-status").textContent = "回测完成（模拟结果，未发送订单）。可调整参数重新运行。";
   } catch (e) {
+    if (request !== qbState.request || expectedAccount !== equityAccountKey) return;
     qbError("回测失败或连接中断：" + e.message);
     $("qb-status").textContent = "未收到有效结果；如果连接中断，后台可能仍在计算。请勿立即重复提交。关闭窗口不代表取消。";
   } finally {
@@ -1393,7 +1468,7 @@ window.addEventListener("resize", () => requestAnimationFrame(drawQuickBacktest)
 document.addEventListener("visibilitychange", () => { if (!document.hidden) requestAnimationFrame(drawQuickBacktest); });
 if (typeof ResizeObserver !== "undefined") new ResizeObserver(() => requestAnimationFrame(drawQuickBacktest)).observe($("qb-chart"));
 async function delStrategy(name) {
-  askConfirm("删除策略", "确定删除 " + name + "？（若已绑定会同时解绑）", async () => {
+  askConfirm("删除策略", "确定删除 " + name + "？（若已绑定会同时解绑）", async (_v, account_key) => {
     try {
       const r = await api("/api/strategies/delete", { method: "POST", body: JSON.stringify({ name }) });
       showMsg("st-msg", "已删除 " + (r.deleted || name), true);
@@ -1555,12 +1630,23 @@ async function saveDataDir() {
     loadDataFiles();
   } catch (e) { showMsg("tr-msg", e.message, false); }
 }
+function equityDays() {
+  const el = $("eq-days");
+  if (!el) return 90;
+  const v = parseInt(el.value, 10);
+  return Number.isFinite(v) && v >= 1 && v <= 365 ? v : 90;
+}
+function reloadEquityChart() {
+  equityRequestId += 1;
+  clearEquityChart("正在按所选时间范围重新读取历史曲线…");
+  loadEquityChart();
+}
 async function loadEquityChart() {
   if (document.hidden) return;
   const requestId = ++equityRequestId;
   const expectedKey = equityAccountKey;
   try {
-    const r = await api("/api/equity/history");
+    const r = await api("/api/equity/history?days=" + equityDays());
     const responseKey = Array.isArray(r.account_key) ? r.account_key.map(String).join("\u001f") : null;
     if (requestId !== equityRequestId || responseKey !== expectedKey) return;
     // 历史余额：由 MT5 成交流水反推（MT5 不保存历史净值）；在线采样：[时间, 净值, 余额?]
@@ -1576,9 +1662,12 @@ async function loadEquityChart() {
     const ys = balPts.concat(eqPts).map(p => p[1]);
     $("eq-chart-meta").textContent = ys.length >= 2
       ? "MT5 不保存历史净值：过去一段只能按成交流水反推「余额」（蓝线）；页面开着时每分钟采样「净值」（绿线），" +
-        "持仓时含浮动盈亏所以会波动，无持仓时与余额重合｜期间 " +
+        "持仓时含浮动盈亏所以会波动，无持仓时与余额重合｜所选范围 " + equityDays() + " 天，期间 " +
         Math.min.apply(null, ys).toFixed(2) + " ~ " + Math.max.apply(null, ys).toFixed(2)
-      : "此账户暂时没有足够的历史曲线数据；页面保持打开后会每分钟采样净值。";
+      : "此账户在所选的 " + equityDays() + " 天内没有足够的历史曲线数据；页面保持打开后会每分钟采样净值。";
+    const coverage = r.sample_coverage;
+    if (coverage) $("eq-chart-meta").textContent += "｜在线净值采样 " + coverage.count + " 点" +
+      (coverage.start ? "，覆盖 " + new Date(coverage.start * 1000).toLocaleString() + " 至 " + new Date(coverage.end * 1000).toLocaleString() : "，尚未积累") + "（不代表所选范围的完整历史净值）";
   } catch (e) {
     if (requestId === equityRequestId) clearEquityChart("历史曲线读取失败：" + (e.message || "未知错误") + "。已清除旧账户数据，可稍后刷新。");
   }
@@ -1689,7 +1778,7 @@ async function startRunner() {
   setTimeout(refreshStatus, 2500);
 }
 async function stopRunner() {
-  askConfirm("停止 Runner", "确定停止自动交易进程？", async () => {
+  askConfirm("停止 Runner", "确定停止自动交易进程？", async (_v, account_key) => {
     try { const r = await api("/api/runner/stop", { method: "POST" }); showMsg("ctl-msg", r.message, true); }
     catch (e) { showMsg("ctl-msg", e.message, false); }
     setTimeout(refreshStatus, 2000);
@@ -1698,10 +1787,10 @@ async function stopRunner() {
 function askGoLive() {
   askConfirm("切换为真实下单",
     "确认让 Runner 向 MT5 发送真实订单？\n\n· 策略信号将直接开平仓\n· 切换后需重启 Runner 生效\n· 如不确定，请继续保持 dry-run",
-    async () => {
+    async (_v, account_key) => {
       showMsg("ctl-msg", "正在保存真实下单模式…", true);
       try {
-        const result = await api("/api/config", { method: "PUT", body: JSON.stringify({ dry_run: false, confirmed: true }) });
+        const result = await api("/api/config", { method: "PUT", body: JSON.stringify(accountPayload(account_key, { dry_run: false })) });
         showMsg("ctl-msg", "已切换为真实下单模式。请重启 Runner 生效。", true);
         fillRiskForm(result.config || {});
         await refreshStatus();
@@ -1756,7 +1845,7 @@ async function saveRisk() {
     risk: {
       enable_price_monitor: $("rk-enabled").checked,
       price_monitor_interval: parseInt($("rk-interval").value, 10),
-      stop_loss_pct: -(Math.abs(parseFloat($("rk-sl").value) || 2) / 100),
+      stop_loss_pct: -(Math.abs(parseFloat($("rk-sl").value)) / 100),
       breakeven_levels: levels,
       reentry_cooldown_sec: cooldown,
     }
@@ -1889,15 +1978,29 @@ function srChartSyncPosSelector() {
   }
   sel.style.display = ""; lab.style.display = "";
 }
+function clearSRChart() {
+  srChart.request = (srChart.request || 0) + 1;
+  Object.assign(srChart, { candles: [], forming: null, zones: [], meta: {}, trades: [], markers: [], pendings: [],
+    draft: null, layout: null, lineDrag: null, drag: null, entryShift: 0, pendingShift: null, loading: false, loadedKey: null });
+  if ($("sr-chart-legend")) $("sr-chart-legend").replaceChildren();
+  updateDraftBar(); drawSRChart();
+}
+function chartCurrent() {
+  return srChart.loadedAt && Date.now() - srChart.loadedAt < 60000 && srChart.loadedKey === [equityAccountKey, $("sr-chart-symbol").value.trim(), $("sr-chart-tf").value].join("|") && !srChart.loading;
+}
 async function loadSRChart(silent) {
   if (document.hidden) return;
   const inp = $("sr-chart-symbol");
   if (!inp) return;
   const symbol = inp.value.trim();
-  if (!symbol) { $("sr-chart-meta").textContent = "请先输入品种（可从下拉列表选 MT5 全部品种）。"; return; }
+  if (!symbol) { clearSRChart(); $("sr-chart-meta").textContent = "请先输入品种（可从下拉列表选 MT5 全部品种）。"; return; }
   const tf = $("sr-chart-tf").value;
   try { localStorage.setItem("mt5.chart", JSON.stringify({ symbol, tf })); } catch (e) { /* 忽略 */ }
-  if (srChart.loading) return;
+  const requestKey = [equityAccountKey, symbol, tf].join("|");
+  if (srChart.loading && srChart.requestKey === requestKey) return;
+  if (srChart.loadedKey !== requestKey) clearSRChart();
+  const request = (srChart.request || 0) + 1;
+  srChart.request = request; srChart.requestKey = requestKey;
   srChart.loading = true;
   if (srChart.loadedForSymbol !== symbol) {
     srChart.posTicket = null;          // 品种变了，重置仓位选择
@@ -1911,6 +2014,12 @@ async function loadSRChart(silent) {
       api("/api/mt5/history?days=7").catch(() => null),
       api("/api/mt5/pending/list").catch(() => null),
     ]);
+    if (request !== srChart.request || requestKey !== [equityAccountKey, inp.value.trim(), $("sr-chart-tf").value].join("|")) return;
+    const currentKey = JSON.stringify(lastStatus && lastStatus.account_key);
+    if (JSON.stringify(r.account_key) !== currentKey || (hist && JSON.stringify(hist.account_key) !== currentKey) ||
+        (pend && JSON.stringify(pend.account_key) !== currentKey)) throw new Error("账户已切换，请刷新总览和图表");
+    srChart.loadedKey = requestKey;
+    srChart.loadedAt = Date.now();
     srChart.candles = r.candles || [];
     srChart.forming = r.forming || null;
     srChart.zones = r.zones || [];
@@ -1938,8 +2047,10 @@ async function loadSRChart(silent) {
     renderSRChartLegend();
     drawSRChart();
   } catch (e) {
-    if (!silent) $("sr-chart-meta").textContent = "加载失败：" + e.message;
-  } finally { srChart.loading = false; }
+    if (request !== srChart.request) return;
+    clearSRChart();
+    $("sr-chart-meta").textContent = "加载失败：" + e.message;
+  } finally { if (request === srChart.request) srChart.loading = false; }
 }
 function renderSRChartLegend() {
   const box = $("sr-chart-legend");
@@ -1965,6 +2076,7 @@ function drawSRChart() {
   const all = srChartAll();
   const n = all.length;
   if (!n) {
+    srChart.layout = null;
     ctx.fillStyle = "#9aa4b2"; ctx.font = "13px system-ui, sans-serif";
     ctx.fillText("暂无数据", 20, 30);
     return;
@@ -2255,7 +2367,7 @@ function srChartTooltip() {
 }
 function srChartHitLine(x, y) {
   const L = srChart.layout;
-  if (!L || !L.lines) return null;
+  if (!chartCurrent() || !L || !L.lines) return null;
   for (const ln of L.lines) {
     if (Math.abs(y - ln.y) <= 8) return ln;
   }
@@ -2270,12 +2382,13 @@ function srChartPriceAt(y) {
 // ── 图表右键下单：按光标所指价位快速市价单 ─────────────────────────
 function hideSrCtxMenu() { const m = $("sr-ctx-menu"); if (m) m.style.display = "none"; }
 function srCtxMenu(evt) {
+  if (!chartCurrent()) return;
   const cv = $("sr-chart");
   const rect = cv.getBoundingClientRect();
   const price = srChartPriceAt(evt.clientY - rect.top);
   const sym = $("sr-chart-symbol").value.trim();
   if (sym) $("mn-symbol").value = sym;   // 右键的品种同步到下单面板
-  const lot = parseFloat($("mn-lot").value) || 0.1;
+  const lot = parseFloat($("mn-lot").value);
   const dec = srChartDec(price || 1);
   const menu = $("sr-ctx-menu");
   menu.innerHTML =
@@ -2295,6 +2408,7 @@ function srCtxMenu(evt) {
   menu.style.top = Math.max(4, y) + "px";
 }
 async function srChartCommitLine(which, price) {
+  if (!chartCurrent()) { alert("图表已过期，请刷新后操作"); return; }
   const pos = srChartPosition();
   if (!pos) return;
   const dec = srChartDec(price);
@@ -2313,13 +2427,13 @@ async function srChartCommitLine(which, price) {
       posHead + "\n价格到达设定值时自动平掉指定手数，剩余继续持有。\n" +
       (plan ? "当前计划：到 " + plan.price + " 平 " + plan.close_volume + "手\n" : "") +
       "价格填 0 并确认 = 取消该计划。",
-      async v => {
+      async (v, account_key) => {
         const p = v.price, vol = v.volume;
         if (isNaN(p) || p < 0) { $("sr-chart-meta").textContent = "价格无效"; return; }
         try {
           const r = await api("/api/mt5/position/partial", {
             method: "POST",
-            body: JSON.stringify({ ticket: pos.ticket, price: p, volume: isNaN(vol) ? 0 : vol }),
+            body: JSON.stringify(accountPayload(account_key, { ticket: pos.ticket, price: p, volume: isNaN(vol) ? 0 : vol })),
           });
           $("sr-chart-meta").textContent = r.ok ? (r.message || "已设置") : "设置失败：" + (r.message || "");
           if (r.ok) { loadSRChart(true); refreshStatus(); }
@@ -2337,25 +2451,23 @@ async function srChartCommitLine(which, price) {
   askConfirm("确认修改" + label,
     posHead + "\n" + label + "：" + (cur > 0 ? cur : "未设置") + " → 可在下方输入框修正价格" +
     (isSl ? "" : "\n平仓手数留空 = 整单止盈；填手数 = 到价只平这么多（剩余继续持有）"),
-    async v => {
+    async (v, account_key) => {
       const p = Number(v.price);
       if (!p || p <= 0) { $("sr-chart-meta").textContent = "价格无效，未修改"; return; }
-      const lot = (v.lot == null || v.lot === "") ? null : Number(v.lot);
+    const lot = v.lot === null ? null : Number(v.lot);
       if (lot !== null && (!lot || lot <= 0)) { $("sr-chart-meta").textContent = "平仓手数无效"; return; }
       try {
         let r;
         if (!isSl && lot != null) {
-          // 部分平仓计划：先清 MT5 整单止盈（否则到价全平），再写「止盈一半」计划
-          try { await api("/api/mt5/position/tp", { method: "POST", body: JSON.stringify({ ticket: pos.ticket, tp: 0 }) }); }
-          catch (e2) { /* 模拟仓没有 MT5 止盈可清，忽略 */ }
+          // Backend clears the old full TP and restores it if the plan write fails.
           r = await api("/api/mt5/position/partial", {
             method: "POST",
-            body: JSON.stringify({ ticket: pos.ticket, price: p, volume: lot }),
+            body: JSON.stringify(accountPayload(account_key, { ticket: pos.ticket, price: p, volume: lot, clear_tp: true })),
           });
         } else {
           r = await api("/api/mt5/position/" + which, {
             method: "POST",
-            body: JSON.stringify({ ticket: pos.ticket, [which]: p }),
+            body: JSON.stringify(accountPayload(account_key, { ticket: pos.ticket, [which]: p })),
           });
         }
         $("sr-chart-meta").textContent = r.ok
@@ -2409,7 +2521,7 @@ function srDraftStart(side, price) {
     price: Number(price.toFixed(srChartDec(price))),
     sl: Number((price - sign * slOff).toFixed(srChartDec(price))),
     tp: Number((price + sign * tpOff).toFixed(srChartDec(price))),
-    lot: parseFloat($("pd-lot").value) || 0.1,
+    lot: parseFloat($("pd-lot").value),
   };
   const dli = $("sr-draft-lot");
   if (dli) dli.value = srChart.draft.lot;
@@ -2417,20 +2529,21 @@ function srDraftStart(side, price) {
 }
 function srDraftCancel() { srChart.draft = null; drawSRChart(); }
 function srDraftConfirm() {
-  const d = srChart.draft;
+  if (!chartCurrent()) { alert("图表已过期，请刷新后重新建立挂单草稿"); return; }
+  const d = srChart.draft ? Object.assign({}, srChart.draft) : null;
   if (!d) return;
   askConfirm("确认挂单（到价市价进场）",
     d.symbol + " " + (d.side === "BUY" ? "买" : "卖") + " " + d.lot + " 手\n" +
     "触发价 " + d.price + "：高于现价挂买/低于现价挂卖 = 条件单，反之为限价单\n" +
     "止损/止盈填 0 表示不设",
-    async v => {
+    async (v, account_key) => {
       const price = Number(v.price), lot = Number(v.lot);
       if (!price || price <= 0) { showMsg("mn-msg", "触发价无效", false); return; }
       if (!lot || lot <= 0) { showMsg("mn-msg", "手数无效", false); return; }
       try {
         const r = await api("/api/mt5/pending/order", { method: "POST",
-          body: JSON.stringify({ confirmed: true, symbol: d.symbol, side: d.side,
-            price, lot, sl: Number(v.sl) || 0, tp: Number(v.tp) || 0 }) });
+          body: JSON.stringify(accountPayload(account_key, { symbol: d.symbol, side: d.side,
+            price, lot, sl: Number(v.sl) || 0, tp: Number(v.tp) || 0 })) });
         showMsg("mn-msg", r.message, r.ok);
         if (r.ok) { srDraftCancel(); loadSRChart(true); loadPendingList(); }
       } catch (e) { showMsg("mn-msg", "挂单失败：" + e.message, false); }
@@ -2464,8 +2577,10 @@ async function loadPendingList() {
   if (document.hidden) return;
   const box = $("pend-list");
   if (!box) return;
+  const request = ++pendingRequestId, expectedKey = equityAccountKey;
   try {
     const r = await api("/api/mt5/pending/list");
+    if (request !== pendingRequestId || expectedKey !== equityAccountKey || JSON.stringify(r.account_key) !== JSON.stringify(lastStatus && lastStatus.account_key)) return;
     const list = r.orders || [];
     box.innerHTML = list.length
       ? "<table style='width:100%'>" + list.map(o =>
@@ -2475,13 +2590,16 @@ async function loadPendingList() {
           "<td><button class='btn small danger' onclick='cancelPending(" + o.ticket + ")'>撤销</button></td></tr>"
         ).join("") + "</table>"
       : "<div class='hint'>当前没有挂单。</div>";
-  } catch (e) { box.innerHTML = "<div class='hint'>挂单列表加载失败：" + esc(e.message) + "</div>"; }
+  } catch (e) {
+    if (request !== pendingRequestId || expectedKey !== equityAccountKey) return;
+    box.innerHTML = "<div class='hint'>挂单列表加载失败：" + esc(e.message) + "</div>";
+  }
 }
 function cancelPending(ticket) {
-  askConfirm("撤销挂单", "确定撤销挂单 ticket=" + ticket + "？", async () => {
+  askConfirm("撤销挂单", "确定撤销挂单 ticket=" + ticket + "？", async (_v, account_key) => {
     try {
       const r = await api("/api/mt5/pending/cancel", { method: "POST",
-        body: JSON.stringify({ confirmed: true, ticket }) });
+        body: JSON.stringify(accountPayload(account_key, { ticket })) });
       showMsg("mn-msg", r.message, r.ok);
       loadPendingList(); loadSRChart(true);
     } catch (e) { showMsg("mn-msg", "撤销失败：" + e.message, false); }
@@ -2491,17 +2609,17 @@ function pendingOrderForm() {
   const symbol = $("mn-symbol").value.trim();
   const side = $("mn-pd-side").value;
   const price = parseFloat($("mn-pd-price").value);
-  const lot = parseFloat($("pd-lot").value) || 0.1;
+  const lot = parseFloat($("pd-lot").value);
   if (!symbol) { showMsg("mn-msg", "请填写品种", false); return; }
   if (!price || price <= 0) { showMsg("mn-msg", "请填写触发价", false); return; }
   askConfirm("确认挂单（到价市价进场）",
     symbol + " " + (side === "BUY" ? "买" : "卖") + " " + lot + " 手 @ " + price + "\n" +
     "高于现价挂买/低于现价挂卖 = 条件单，反之为限价单\n止损/止盈填 0 表示不设",
-    async v => {
+    async (v, account_key) => {
       try {
         const r = await api("/api/mt5/pending/order", { method: "POST",
-          body: JSON.stringify({ confirmed: true, symbol, side, price: Number(v.price),
-            lot: Number(v.lot), sl: Number(v.sl) || 0, tp: Number(v.tp) || 0 }) });
+          body: JSON.stringify(accountPayload(account_key, { symbol, side, price: Number(v.price),
+            lot: Number(v.lot), sl: Number(v.sl) || 0, tp: Number(v.tp) || 0 })) });
         showMsg("mn-msg", r.message, r.ok);
         if (r.ok) { loadSRChart(true); loadPendingList(); }
       } catch (e) { showMsg("mn-msg", "挂单失败：" + e.message, false); }
@@ -2537,24 +2655,20 @@ async function applySlTp() {
     (tp == null ? "\n止盈 → 不改" : tpLot != null
       ? "\n止盈 → 到价 " + tp + " 只平 " + tpLot + " 手（剩余继续持有，并清除整单止盈）"
       : (tp === 0 ? "\n止盈 → 清除" : "\n止盈 → " + tp + "（整单）")),
-    async () => {
+    async (_v, account_key) => {
       try {
         let ok = true; const parts = [];
         if (sl != null) {
-          const r = await api("/api/mt5/position/sl", { method: "POST", body: JSON.stringify({ ticket, sl }) });
+          const r = await api("/api/mt5/position/sl", { method: "POST", body: JSON.stringify(accountPayload(account_key, { ticket, sl })) });
           ok = ok && r.ok; parts.push(r.message);
         }
         if (tp != null) {
           if (tpLot != null) {
-            // 部分平仓计划：先清 MT5 整单止盈（否则到价全平），再写「止盈一半」计划
-            try {
-              await api("/api/mt5/position/tp", { method: "POST", body: JSON.stringify({ ticket, tp: 0 }) });
-            } catch (e2) { /* 模拟仓没有 MT5 止盈可清，忽略 */ }
             const r = await api("/api/mt5/position/partial", { method: "POST",
-              body: JSON.stringify({ ticket, price: tp, volume: tpLot }) });
+              body: JSON.stringify(accountPayload(account_key, { ticket, price: tp, volume: tpLot, clear_tp: true })) });
             ok = ok && r.ok; parts.push(r.message || "已设置到价平仓计划");
           } else {
-            const r = await api("/api/mt5/position/tp", { method: "POST", body: JSON.stringify({ ticket, tp }) });
+            const r = await api("/api/mt5/position/tp", { method: "POST", body: JSON.stringify(accountPayload(account_key, { ticket, tp })) });
             ok = ok && r.ok; parts.push(r.message);
           }
         }
@@ -2566,6 +2680,7 @@ async function applySlTp() {
 
 // ── 松手确认：持仓开仓价拖动=止损止盈整组平移；挂单线拖动=改触发价 ─────
 function commitEntryDrag() {
+  if (!chartCurrent()) { alert("图表已过期，请刷新后操作"); return; }
   const pos = srChartPosition();
   const shift = srChart.entryShift;
   srChart.entryShift = 0;
@@ -2579,15 +2694,15 @@ function commitEntryDrag() {
   askConfirm("确认修改止损止盈",
     head + "\n止损 " + (pos.sl > 0 ? pos.sl : "未设") + " → " + newSl +
     "\n止盈 " + (pos.tp > 0 ? pos.tp : "未设") + " → " + newTp,
-    async () => {
+    async (_v, account_key) => {
       try {
         let ok = true; const parts = [];
         const r1 = await api("/api/mt5/position/sl", { method: "POST",
-          body: JSON.stringify({ ticket: pos.ticket, sl: newSl }) });
+          body: JSON.stringify(accountPayload(account_key, { ticket: pos.ticket, sl: newSl })) });
         ok = ok && r1.ok; parts.push(r1.message);
         if (!pos.dry_run) {
           const r2 = await api("/api/mt5/position/tp", { method: "POST",
-            body: JSON.stringify({ ticket: pos.ticket, tp: newTp }) });
+            body: JSON.stringify(accountPayload(account_key, { ticket: pos.ticket, tp: newTp })) });
           ok = ok && r2.ok; parts.push(r2.message);
         }
         showMsg("ov-msg", parts.join("；"), ok);
@@ -2596,6 +2711,7 @@ function commitEntryDrag() {
     });
 }
 function commitPendingDrag() {
+  if (!chartCurrent()) { alert("图表已过期，请刷新后操作"); return; }
   const sh = srChart.pendingShift;
   srChart.pendingShift = null;
   if (!sh || Math.abs(sh.off) < 1e-9) { drawSRChart(); return; }
@@ -2610,11 +2726,11 @@ function commitPendingDrag() {
     (o.sl > 0 ? "\n止损 " + o.sl + " → " + nsl : "") +
     (o.tp > 0 ? "\n止盈 " + o.tp + " → " + ntp : "") +
     "\n（手数无法修改；想改手数请撤销后重挂）",
-    async v => {
+    async (v, account_key) => {
       try {
         const r = await api("/api/mt5/pending/modify", { method: "POST",
-          body: JSON.stringify({ confirmed: true, ticket: o.ticket, price: Number(v.price),
-            sl: Number(v.sl) || 0, tp: Number(v.tp) || 0 }) });
+          body: JSON.stringify(accountPayload(account_key, { ticket: o.ticket, price: Number(v.price),
+            sl: Number(v.sl) || 0, tp: Number(v.tp) || 0 })) });
         showMsg("mn-msg", r.message, r.ok);
         if (r.ok) { loadSRChart(true); loadPendingList(); }
       } catch (e) { showMsg("mn-msg", "修改失败：" + e.message, false); }
@@ -2737,9 +2853,9 @@ async function manualOrder(direction) {
   const text = direction === "CLOSE_ALL"
     ? "全部平掉 " + symbol + " 的持仓？"
     : "市价 " + (direction === "BUY" ? "买入" : "卖出") + " " + symbol + " " + lot + " 手？";
-  askConfirm("手动下单确认", text, async () => {
+  askConfirm("手动下单确认", text, async (_v, account_key) => {
     try {
-      const r = await api("/api/mt5/order", { method: "POST", body: JSON.stringify({ confirmed: true, symbol, direction, lot }) });
+      const r = await api("/api/mt5/order", { method: "POST", body: JSON.stringify(accountPayload(account_key, { symbol, direction, lot })) });
       showMsg("mn-msg", r.message, r.ok);
     } catch (e) { showMsg("mn-msg", e.message, false); }
   });
@@ -2747,9 +2863,9 @@ async function manualOrder(direction) {
 
 // ── 持仓管理（平仓 / 止损 / 止盈）─────────────────────────
 function closePosition(ticket, symbol) {
-  askConfirm("平仓确认", "确定平掉 " + symbol + " 的持仓 ticket=" + ticket + "？\n\n（若绑定策略信号仍在，下一根收盘 K 线可能重新开仓）", async () => {
+  askConfirm("平仓确认", "确定平掉 " + symbol + " 的持仓 ticket=" + ticket + "？\n\n（若绑定策略信号仍在，下一根收盘 K 线可能重新开仓）", async (_v, account_key) => {
     try {
-      const r = await api("/api/mt5/position/close", { method: "POST", body: JSON.stringify({ confirmed: true, ticket }) });
+      const r = await api("/api/mt5/position/close", { method: "POST", body: JSON.stringify(accountPayload(account_key, { ticket })) });
       showMsg("ov-msg", r.message, r.ok);
     } catch (e) { showMsg("ov-msg", "平仓失败：" + e.message, false); }
     refreshStatus();
@@ -2757,32 +2873,40 @@ function closePosition(ticket, symbol) {
 }
 function editStop(ticket, symbol, curSl, curPrice, direction) {
   const suggestion = curSl || (direction === "BUY" ? curPrice * 0.98 : curPrice * 1.02);
-  const v = prompt("修改 " + symbol + " ticket=" + ticket + " 的止损价\n（当前止损 " + (curSl || "无") + "，现价 " + curPrice + "）", Number(suggestion).toFixed(2));
-  if (v == null) return;
-  const sl = parseFloat(v);
-  if (!sl || sl <= 0) { showMsg("ov-msg", "止损价格无效", false); return; }
-  api("/api/mt5/position/sl", { method: "POST", body: JSON.stringify({ ticket, sl }) })
-    .then(r => { showMsg("ov-msg", r.message, r.ok); refreshStatus(); })
-    .catch(e => showMsg("ov-msg", "修改失败：" + e.message, false));
+  askConfirm("修改止损", symbol + " ticket=" + ticket + "\n当前止损 " + (curSl || "无") + "，现价 " + curPrice,
+    async (v, account_key) => {
+      const sl = Number(v.price);
+      if (!Number.isFinite(sl) || sl <= 0) { showMsg("ov-msg", "止损价格无效", false); return; }
+      try {
+        const r = await api("/api/mt5/position/sl", { method: "POST", body: JSON.stringify(accountPayload(account_key, { ticket, sl })) });
+        showMsg("ov-msg", r.message, r.ok); refreshStatus();
+      } catch (e) { showMsg("ov-msg", "修改失败：" + e.message, false); }
+    }, [{ key: "price", label: "止损价格", value: Number(suggestion).toFixed(2) }]);
 }
 function editTarget(ticket, symbol, curTp, curPrice, direction) {
   const suggestion = curTp || (direction === "BUY" ? curPrice * 1.02 : curPrice * 0.98);
-  const v = prompt("修改 " + symbol + " ticket=" + ticket + " 的止盈价\n（当前止盈 " + (curTp || "无") + "，现价 " + curPrice + "）\n填 0 表示清除止盈", Number(suggestion).toFixed(2));
-  if (v == null) return;
-  const tp = parseFloat(v);
-  if (isNaN(tp) || tp < 0) { showMsg("ov-msg", "止盈价格无效", false); return; }
-  api("/api/mt5/position/tp", { method: "POST", body: JSON.stringify({ ticket, tp }) })
-    .then(r => { showMsg("ov-msg", r.message, r.ok); refreshStatus(); })
-    .catch(e => showMsg("ov-msg", "修改失败：" + e.message, false));
+  askConfirm("修改止盈", symbol + " ticket=" + ticket + "\n当前止盈 " + (curTp || "无") + "，现价 " + curPrice,
+    async (v, account_key) => {
+      if (v.price === null) { showMsg("ov-msg", "请填写止盈价格；清除请明确填 0", false); return; }
+      const tp = Number(v.price);
+      if (!Number.isFinite(tp) || tp < 0) { showMsg("ov-msg", "止盈价格无效", false); return; }
+      try {
+        const r = await api("/api/mt5/position/tp", { method: "POST", body: JSON.stringify(accountPayload(account_key, { ticket, tp, clear_tp: tp === 0 })) });
+        showMsg("ov-msg", r.message, r.ok); refreshStatus();
+      } catch (e) { showMsg("ov-msg", "修改失败：" + e.message, false); }
+    }, [{ key: "price", label: "止盈价格（0=清除）", value: Number(suggestion).toFixed(2) }]);
 }
+
 
 // ── 历史成交 ──────────────────────────────────────────────
 async function loadHistory() {
   if (document.hidden) return;
   const days = parseInt($("hs-days").value, 10) || 7;
   const scope = $("hs-scope").value;
+  const request = ++historyRequestId, expectedKey = equityAccountKey;
   try {
     const r = await api("/api/mt5/history?days=" + days + "&scope=" + scope);
+    if (request !== historyRequestId || expectedKey !== equityAccountKey || JSON.stringify(r.account_key) !== JSON.stringify(lastStatus && lastStatus.account_key)) return;
     if (r.server_offset_sec != null) window.__srvOff = r.server_offset_sec;
     const money = v => v > 0 ? "<span class='long'>+" + v.toFixed(2) + "</span>" : (v < 0 ? "<span class='short'>" + v.toFixed(2) + "</span>" : "0.00");
     const closed = (r.closed || []).slice().sort((a, b) => (a.close_time || 0) - (b.close_time || 0));
@@ -2831,6 +2955,7 @@ async function loadHistory() {
       stat("盈利因子（>1 赚钱）", pf) +
       stat("最大单笔盈 / 亏", money(maxWin) + " / " + money(maxLoss));
   } catch (e) {
+    if (request !== historyRequestId || expectedKey !== equityAccountKey) return;
     $("hs-closed").innerHTML = "<span class='hint' style='color:var(--red)'>加载失败：" + esc(e.message) + "</span>";
     $("hs-open").innerHTML = "";
   }
@@ -3072,7 +3197,7 @@ setInterval(() => {
       if (saved.tf) $("sr-chart-tf").value = saved.tf;
     }
   } catch (e) { /* 忽略 */ }
-  refreshStatus();
+  await refreshStatus(true);
   loadEquityChart();
   // 外观偏好（头部脚本已尽早应用类名/背景，这里补上变暗层并同步设置面板）
   const p0 = uiPrefs();

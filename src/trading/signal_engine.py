@@ -48,17 +48,29 @@ def load_strategy_file(path: str | Path) -> dict[str, Any]:
         data = json.loads(p.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as exc:
         raise StrategyError(f"策略文件读取失败: {exc}") from exc
+    if not isinstance(data, dict):
+        raise StrategyError("策略 JSON 必须是对象")
+    from model_core.features import FEATURE_SEMANTICS_VERSION
+    semantics = data.get("feature_semantics_version", "legacy-v1")
+    if semantics not in {"legacy-v1", FEATURE_SEMANTICS_VERSION}:
+        raise StrategyError("策略特征语义版本不受支持")
     formula = data.get("formula", data.get("formula_tokens"))
     if not isinstance(formula, list) or not formula:
         raise StrategyError("策略缺少 formula 字段")
     try:
-        formula = [int(t) for t in formula]
+        if any(isinstance(t, bool) or not isinstance(t, int) for t in formula):
+            raise ValueError("tokens must be integers")
+        from model_core.vocab import FORMULA_VOCAB
+        if any(t < 0 or t >= len(FORMULA_VOCAB.token_names) for t in formula):
+            raise ValueError("token out of range")
     except (TypeError, ValueError) as exc:
         raise StrategyError("formula 含非整数 token") from exc
     score = data.get("best_score", data.get("train_best_score"))
     if score is not None:
         try:
             score = float(score)
+            if not math.isfinite(score):
+                score = None
         except (TypeError, ValueError):
             score = None
     return {
@@ -69,6 +81,8 @@ def load_strategy_file(path: str | Path) -> dict[str, Any]:
         "formula": formula,
         "formula_decoded": data.get("formula_decoded", ""),
         "best_score": score,
+        "feature_semantics_version": semantics,
+        "scoring_version": data.get("scoring_version"),
         "vocab_version": str(data.get("vocab_version", "")),
     }
 
@@ -118,6 +132,8 @@ def compute_signal(
     formulas: list[list[int]],
     raw_dict: dict[str, torch.Tensor],
     min_trade_exposure: float = 0.05,
+    *,
+    semantics_version: str = "legacy-v1",
 ) -> dict[str, Any]:
     """在最新已收盘 bar 上计算信号（多策略取 tanh 后平均）。
 
@@ -135,7 +151,18 @@ def compute_signal(
                 "message": f"历史 bar 不足（{n_bars}/{MIN_BARS_SIGNAL}）"}
 
     try:
-        feats = MT5FeatureEngineer.compute_features(raw_dict)
+        from model_core.features import FEATURE_SEMANTICS_VERSION
+        from model_core.vm import NORMALIZATION_VERSION
+        if semantics_version not in {"legacy-v1", FEATURE_SEMANTICS_VERSION}:
+            raise ValueError("Unsupported feature semantics version")
+        if (isinstance(min_trade_exposure, bool)
+                or not math.isfinite(min_trade_exposure)
+                or not 0 < min_trade_exposure <= 1):
+            raise ValueError("Invalid signal threshold")
+        feats = MT5FeatureEngineer.compute_features(raw_dict, semantics_version=semantics_version)
+        _VM = StackVM(normalization_version=(
+            "legacy-v1" if semantics_version == "legacy-v1" else NORMALIZATION_VERSION
+        ))
     except Exception as exc:
         return {"state": "error", "direction": DIR_FLAT, "strength": 0.0,
                 "position": 0.0, "bars_used": n_bars, "message": f"特征计算失败: {exc}"}

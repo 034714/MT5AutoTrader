@@ -15,8 +15,13 @@ strategies/*.md
 !strategies/.gitkeep
 checkpoints/
 backtest_output/
-training_history_*.json
+training_history/
+training_history*.json
 training_time_*.json
+.pytest_cache/
+.hypothesis/
+.mimosa/
+.zcode/
 candidates/
 src/candidate_deployment_evidence.py
 

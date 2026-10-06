@@ -29,6 +29,7 @@ LIMITATIONS = [
     "最大回撤基于逐 bar 收盘可平仓净权益（含浮盈浮亏和预计平仓成本），不含 bar 内极值或账户其他仓位。",
     "不模拟流动性、成交失败或资金限制；结果不是实际成交记录，也不保证未来收益。",
     "单策略单品种特征，预热历史有限；与训练组合及实盘滚动窗口结果可能不同。",
+    "快速回测始终使用新版因果特征与归一化；旧策略部署时保留旧语义，结果可能与其运行信号不同。",
 ]
 
 
@@ -130,8 +131,12 @@ def resolve_strategy(root: Path, name):
     tf = meta.get("timeframe", "H1")
     if not isinstance(tf, str) or tf not in TIMEFRAMES:
         raise QuickBacktestError("策略 timeframe 不支持")
+    semantics = meta.get("feature_semantics_version", "legacy-v1")
+    if semantics not in ("legacy-v1", "causal-features-v2"):
+        raise QuickBacktestError("策略特征语义版本不支持", 422)
     return {"strategy_file": "strategies/" + path.name, "symbol": _symbol(symbol, "策略 symbol"),
-            "timeframe": tf, "formula": formula, "vocab_version": meta.get("vocab_version", "")}
+            "timeframe": tf, "formula": formula, "vocab_version": meta.get("vocab_version", ""),
+            "feature_semantics_version": semantics}
 
 
 def _account_identity(account):
@@ -206,11 +211,7 @@ def get_options(root, strategy_file, cfg, mt5, *, symbol=None):
 
 
 def compute_positions(rates, meta):
-    """Vectorized causal features/ops; override VM's future-dependent std gate.
-
-    Core VM checks global std before rolling normalization. Here the constant
-    test is expanding/prefix-only; the core implementation is not modified.
-    """
+    """Use the shared causal VM, never the deployed legacy global gate."""
     try:
         import numpy as np
         import torch
@@ -225,29 +226,13 @@ def compute_positions(rates, meta):
     if any(t >= len(FORMULA_VOCAB.token_names) for t in meta["formula"]):
         raise QuickBacktestError("策略含未知 token", 422)
 
-    class CausalVM(StackVM):
-        @staticmethod
-        def _normalize_output(x):
-            n, length = x.shape
-            if n != 1:
-                raise ValueError("快速回测仅支持单品种")
-            windows = torch.nn.functional.pad(x, (499, 0)).unfold(1, 500, 1)
-            z = ((x - windows.mean(dim=-1)) / windows.std(dim=-1).clamp(min=1e-8)).clamp(-3, 3)
-            z[:, :499] = 0
-            # Center before prefix moments to reduce cancellation for constants.
-            centered = x.double() - x[:, :1].double()
-            count = torch.arange(1, length + 1, dtype=torch.float64, device=x.device)
-            variance = ((centered.square().cumsum(1) - centered.cumsum(1).square() / count)
-                        / (count - 1).clamp(min=1)).clamp(min=0)
-            return torch.where(variance < 1e-12, x, z)
-
     try:
         with torch.inference_mode():
             raw = rates_to_raw_dict(rates)
             if raw is None:
                 raise ValueError("K线字段无效")
             features = MT5FeatureEngineer.compute_features(raw)
-            factor = CausalVM().execute(meta["formula"], features)
+            factor = StackVM().execute(meta["formula"], features)
             if factor is None or tuple(factor.shape) != (1, len(rates)) or not torch.isfinite(factor).all():
                 raise ValueError("公式没有有效输出")
             result = torch.tanh(factor[0]).cpu().numpy().astype(np.float64)
@@ -401,5 +386,10 @@ def run_quick_backtest(root, payload, cfg, mt5, *, signal_fn=None, server_offset
                             "gross_profit_definition": "signed_pnl_before_spread_slippage_commission",
                             "currency_conversion": "MT5_current_contract_and_FX", "point": point,
                             "zero_spread_bars": int(np.count_nonzero(rates['spread'][warmup:] == 0)),
-                            "normalization": "causal_prefix_constant_gate_then_rolling_500"},
+                            "normalization": "causal_prefix_constant_gate_then_rolling_500",
+                            "normalization_warmup": "bars_1_to_499_neutral_bar_500_first_eligible",
+                            "feature_semantics_version": "causal-features-v2",
+                            "strategy_feature_semantics_version": meta["feature_semantics_version"],
+                            "strategy_semantics_differ": meta["feature_semantics_version"] != "causal-features-v2",
+                            "pnl_semantics": "fixed_lot_bid_ask_account_currency_not_training_proxy"},
             "limitations": list(LIMITATIONS)}

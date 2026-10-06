@@ -7,6 +7,7 @@ import math
 import os
 from pathlib import Path
 import random
+import numpy as np
 import sys
 import tempfile
 from types import SimpleNamespace
@@ -32,14 +33,14 @@ class TrainingTests(unittest.TestCase):
         cwd = os.getcwd()
         os.chdir(tmp)
         self.stack.callback(os.chdir, cwd)
-        self.stack.enter_context(patch.object(engine_mod, "_CHECKPOINT_DIR", self.tmp / "checkpoints"))
+        from config import Config
+        self.stack.enter_context(patch.object(Config, "ROOT_DIR", self.tmp))
+        self.stack.enter_context(patch.object(Config, "MIN_TRADE_EXPOSURE", 0.05))
+        self.stack.enter_context(patch.object(Config, "COST_RATE", 0.0003))
         self.stack.enter_context(patch.multiple(
             ModelConfig, TRAIN_STEPS=2, BATCH_SIZE=4, MAX_FORMULA_LEN=4,
             PARALLEL_EVAL=False, ISLAND_PARALLEL=False,
         ))
-        from config import Config
-        self.stack.enter_context(patch.object(Config, "MIN_TRADE_EXPOSURE", 0.05))
-        self.stack.enter_context(patch.object(Config, "COST_RATE", 0.0003))
         threads = torch.get_num_threads()
         torch.set_num_threads(1)
         self.stack.callback(torch.set_num_threads, threads)
@@ -62,6 +63,29 @@ class TrainingTests(unittest.TestCase):
         self.assertGreater(result['val_score'], 0)
         self.assertLess(result['net_mean'], 0)
         self.assertFalse(result['eligible'])
+
+    def test_training_folds_use_only_observed_forward_returns(self):
+        eng = AlphaEngine(self.data, use_lord_regularization=False)
+        eng.save_checkpoints = False
+        with patch.object(engine_mod, "_build_walk_forward_folds", wraps=_build_walk_forward_folds) as build, \
+             patch.object(eng, "_eval_formula_task", side_effect=lambda idx, fml, *args:
+                 {"idx": idx, "status": "none", "reward": -5., "val_score": -5., "fml": fml}), \
+             contextlib.redirect_stdout(io.StringIO()):
+            eng.train(end_step=1, verbose_header=False)
+        self.assertEqual(build.call_args.args[0], 158)
+
+    def test_old_tail_evaluation_context_cannot_restore_rankings(self):
+        eng = AlphaEngine(self.data, use_lord_regularization=False)
+        eng.best_formula, eng.best_score = [0], 99.
+        state = eng.checkpoint_state(1)
+        self.assertEqual(state["training_context"]["evaluation"]["target_return_policy"],
+                         "observed-open-t+1-to-t+2-v1")
+        state["training_context"]["evaluation"].pop("target_return_policy")
+        restored = AlphaEngine(self.data, use_lord_regularization=False)
+        with contextlib.redirect_stdout(io.StringIO()):
+            restored.restore_checkpoint_state(state)
+        self.assertIsNone(restored.best_formula)
+        self.assertEqual(restored.best_score, -float("inf"))
 
     def test_entropy_floor_has_gradient_in_actual_training(self):
         # Neutralize the separate entropy bonus and compare the actual training
@@ -172,6 +196,28 @@ class TrainingTests(unittest.TestCase):
             eng._save_strategy_live()
         self.assertEqual(path.read_bytes(), original)
 
+    def test_resume_never_overwrites_higher_scored_strategy(self):
+        """续训保护：磁盘上既有策略分数更高时，绝不被更低的检查点结果覆盖。"""
+        import json
+        eng = AlphaEngine(self.data, target_symbol="SYNTHETIC")
+        path = self.tmp / "strategies" / "best_SYNTHETIC.json"
+        path.parent.mkdir(parents=True)
+        from model_core.engine import _current_scoring_version, _feature_semantics_version
+        path.write_text(json.dumps({"scoring_version": _current_scoring_version(),
+                                    "feature_semantics_version": _feature_semantics_version(),
+                                    "training_context": eng.training_context(),
+                                    "vocab_version": "x", "best_score": 2.1796}))
+        eng.best_formula, eng.best_score = [0], 1.9938
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            eng._save_strategy_live()
+        self.assertEqual(float(json.loads(path.read_text())["best_score"]), 2.1796)
+        self.assertIn("续训保护", out.getvalue())
+        # 本轮分数更高时仍正常覆盖
+        eng.best_score = 2.5
+        with contextlib.redirect_stdout(io.StringIO()):
+            eng._save_strategy_live()
+        self.assertEqual(float(json.loads(path.read_text())["best_score"]), 2.5)
+
     def test_legacy_checkpoint_drops_rankings_not_weights_or_hard_stops(self):
         eng = AlphaEngine(self.data)
         eng.best_score = 999.0
@@ -221,7 +267,7 @@ class TrainingTests(unittest.TestCase):
         self.assertEqual(result["status"], "ok", result)
         self.assertEqual(result["reward"], 12.0)
         self.assertEqual(result["val_score"], -7.0)
-        self.assertEqual(calls, [(0, 16, 16, 20)])
+        self.assertEqual(calls, [(0, 14, 14, 18)])
 
     def test_oos_gate_cannot_reward_a_loss(self):
         bt = MT5Backtest(cost_rate=0.0)
@@ -273,7 +319,103 @@ class TrainingTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()), patch.object(ModelConfig, "TRAIN_STEPS", 4):
             resumed.train(start_step=2)
         self.assertEqual(resumed._step, 2)
-        self.assertTrue((self.tmp / "training_history_SYNTHETIC_H1__isl1.json").exists())
+        self.assertTrue((self.tmp / "training_history" / "training_history_SYNTHETIC_H1__isl1.json").exists())
+
+
+class TrainingDataBoundaryTests(unittest.TestCase):
+    @staticmethod
+    def frame(indices, base=100.):
+        import pandas as pd
+        price = np.asarray(indices, dtype=float) + base
+        return pd.DataFrame({"time": 1700000000 + np.asarray(indices) * 3600,
+                             "open": price, "high": price + 1, "low": price - 1,
+                             "close": price, "volume": np.ones(len(indices))})
+
+    def test_parquet_retains_price_tail_for_last_observed_label(self):
+        from config import Config
+        from data_pipeline.parquet_manager import ParquetDataManager
+        frame = self.frame(range(8))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "TEST_H1.parquet"
+            frame.to_parquet(path)
+            manager = ParquetDataManager(path)
+            with patch.object(Config, "MIN_BARS", 8):
+                manager.load()
+            self.assertEqual(manager.raw_dict["open"].shape, (1, 8))
+            torch.testing.assert_close(manager.target_ret[:, :-2],
+                torch.log(manager.raw_dict["open"][:, 2:] / manager.raw_dict["open"][:, 1:-1]))
+            self.assertGreater(manager.target_ret[0, -3].item(), 0)
+            self.assertEqual(torch.count_nonzero(manager.target_ret[:, -2:]).item(), 0)
+
+    def test_tail_factors_do_not_change_any_evaluator_metrics(self):
+        from data_pipeline.data_manager import MT5DataManager
+        price = torch.tensor([[100., 100.] + [100. + i for i in range(1, 21)]])
+        returns = MT5DataManager._compute_target_ret(price)
+        factors = torch.tensor([[.2, .8] * 10 + [0., 0.]])
+        eng = AlphaEngine.__new__(AlphaEngine)
+        eng.factor_pool = []
+        eng.bt = MT5Backtest(cost_rate=.001, periods_per_year=1)
+        folds = _build_walk_forward_folds(20, 2, 0)
+        for use_wf in (False, True):
+            results = []
+            for tail in ([0., 0.], [10000., -10000.], [float("nan"), float("inf")]):
+                changed = factors.clone()
+                changed[:, -2:] = torch.tensor(tail)
+                eng.vm = SimpleNamespace(execute=lambda *_: changed)
+                result = eng._eval_formula_task(0, [0], changed[:, None, :], returns,
+                                               folds if use_wf else [], use_wf, [])
+                self.assertEqual(result["status"], "ok", result)
+                self.assertEqual(result["res"].shape, (1, 20))
+                results.append(result)
+            for key in ("reward", "val_score", "ic_full", "ic_stab", "ic_i",
+                        "net_mean", "validation_net_mean", "eligible"):
+                self.assertEqual(results[0][key], results[1][key], key)
+                self.assertEqual(results[0][key], results[2][key], key)
+            self.assertTrue(results[0]["eligible"])
+            position = engine_mod.compute_target_positions_stateless(factors[:, :-2])
+            previous = torch.zeros_like(position)
+            previous[:, 1:] = position[:, :-1]
+            expected = position * returns[:, :-2] - (position - previous).abs() * eng.bt.cost_rate
+            self.assertAlmostEqual(results[0]["net_mean"], expected.mean().item())
+
+    def test_tail_variation_does_not_rescue_constant_candidate(self):
+        factors = torch.tensor([[0.] * 20 + [10., -10.]])
+        eng = AlphaEngine.__new__(AlphaEngine)
+        eng.vm = SimpleNamespace(execute=lambda *_: factors)
+        result = eng._eval_formula_task(0, [0], factors[:, None, :],
+                                       torch.zeros_like(factors), [], False, [])
+        self.assertEqual(result["status"], "const", result)
+
+    def test_union_fallback_trims_leading_unknown_prices_without_backfill(self):
+        from config import Config
+        from data_pipeline.data_manager import MT5DataManager
+        manager = MT5DataManager(None)
+        manager._symbols = ["EARLY", "LATE"]
+        frames = {"EARLY": self.frame([0, 2, 4, 6, 8]),
+                  "LATE": self.frame([3, 5, 7, 9, 11], base=200.)}
+        with patch.object(Config, "MIN_BARS", 5):
+            aligned = manager._align_timelines(frames)
+        expected_index = [1700000000 + i * 3600 for i in range(3, 10)] + [1700000000 + 11 * 3600]
+        self.assertEqual(aligned["EARLY"].index.tolist(), expected_index)
+        self.assertEqual(aligned["LATE"].index.tolist(), expected_index)
+        self.assertEqual(aligned["EARLY"].iloc[0]["open"], 102.)
+        self.assertEqual(aligned["LATE"].iloc[1]["open"], 203.)
+        raw = manager._build_raw_dict(aligned)
+        self.assertTrue(torch.all(raw["open"] > 0))
+        self.assertTrue(torch.isfinite(manager._compute_target_ret(raw["open"])).all())
+        # Future prices must not alter the causally forward-filled prefix.
+        frames["LATE"].loc[frames["LATE"]["time"] > expected_index[1], "open"] = 999.
+        with patch.object(Config, "MIN_BARS", 5):
+            changed = manager._align_timelines(frames)
+        np.testing.assert_array_equal(aligned["LATE"]["open"].iloc[:2], changed["LATE"]["open"].iloc[:2])
+
+    def test_union_fallback_rejects_insufficient_causal_history(self):
+        from config import Config
+        from data_pipeline.data_manager import MT5DataManager
+        frames = {"EARLY": self.frame([0, 1, 2, 3, 4]), "LATE": self.frame([10, 11])}
+        with patch.object(Config, "MIN_BARS", 5):
+            with self.assertRaisesRegex(ValueError, "causal.*bars"):
+                MT5DataManager(None)._align_timelines(frames)
 
 
 if __name__ == "__main__":

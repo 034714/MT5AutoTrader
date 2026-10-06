@@ -31,8 +31,10 @@ from tqdm import tqdm
 from .config import ModelConfig
 from .alphagpt import AlphaGPT, NewtonSchulzLowRankDecay, StableRankMonitor
 from .vm import StackVM
-from .backtest import MT5Backtest, estimate_periods_per_year, SCORING_VERSION
+from .backtest import MT5Backtest, estimate_periods_per_year
 from .vocab import FORMULA_VOCAB, VOCAB_VERSION, VocabVersionMismatchError  # task 12.2
+from utils.training_artifacts import atomic_json_write, atomic_write, checkpoint_dir, checkpoint_step, history_path, json_safe, root_path, strategy_path
+from utils.training_context import data_fingerprint, rng_state, restore_rng
 
 # P3：冠军在场时间稳健性校验所需
 try:
@@ -45,11 +47,24 @@ except ImportError:
 
 try:
     from config import Config as _RootConfig
-    _STRATEGY_FILE  = _RootConfig.STRATEGY_FILE
-    _CHECKPOINT_DIR = pathlib.Path(getattr(_RootConfig, 'CHECKPOINT_DIR', 'checkpoints'))
+    _STRATEGY_FILE = str(strategy_path())
+    _CHECKPOINT_DIR = checkpoint_dir()
 except ImportError:
-    _STRATEGY_FILE  = "best_mt5_strategy.json"
+    _STRATEGY_FILE = "best_mt5_strategy.json"
     _CHECKPOINT_DIR = pathlib.Path("checkpoints")
+
+
+def _current_scoring_version() -> str:
+    from . import backtest
+    return str(backtest.SCORING_VERSION)
+
+
+def _feature_semantics_version() -> str:
+    try:
+        from . import features
+        return str(getattr(features, "FEATURE_SEMANTICS_VERSION", "legacy"))
+    except ImportError:
+        return "legacy"
 
 
 def _strategy_file_for_symbol(symbol: str | None, timeframe: str | None = None) -> str:
@@ -59,10 +74,7 @@ def _strategy_file_for_symbol(symbol: str | None, timeframe: str | None = None) 
     不同周期互不覆盖；不带周期时退回 best_{symbol}.json；
     多品种/未指定品种时回退到默认路径。
     """
-    if symbol:
-        stem = f"{symbol}_{timeframe}" if timeframe else symbol
-        return str(pathlib.Path("strategies") / f"best_{stem}.json")
-    return _STRATEGY_FILE
+    return str(strategy_path(symbol, timeframe))
 
 
 def _strategy_write_allowed(path: str) -> bool:
@@ -71,14 +83,41 @@ def _strategy_write_allowed(path: str) -> bool:
     if not p.exists():
         return True
     try:
-        return json.loads(p.read_text(encoding="utf-8")).get("scoring_version") == SCORING_VERSION
+        return json.loads(p.read_text(encoding="utf-8")).get("scoring_version") == _current_scoring_version()
     except (OSError, ValueError, AttributeError):
         return False
 
 
+def save_strategy_artifact(path, payload) -> bool:
+    """Preserve legacy, incomparable-context, invalid-score and better artifacts."""
+    try:
+        score = float(payload.get("best_score"))
+    except (TypeError, ValueError):
+        return False
+    if not payload.get("formula") or not math.isfinite(score):
+        return False
+    path = pathlib.Path(path)
+    if path.exists():
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+            if existing.get("scoring_version") != _current_scoring_version():
+                return False
+            if existing.get("feature_semantics_version") != payload.get("feature_semantics_version"):
+                return False
+            if existing.get("training_context") != payload.get("training_context"):
+                return False
+            old_score = float(existing["best_score"])
+            if not math.isfinite(old_score) or old_score >= score:
+                return False
+        except (OSError, ValueError, TypeError, KeyError, AttributeError):
+            return False
+    atomic_json_write(path, payload)
+    return True
+
+
 def _fallback_data_file_for_symbol(symbol: str) -> tuple[str | None, str | None]:
     """Read web_settings.json last_data_file when strategy JSON lacks data_file."""
-    settings_path = pathlib.Path("web_settings.json")
+    settings_path = root_path("web_settings.json")
     if not settings_path.exists():
         return None, None
     try:
@@ -306,6 +345,11 @@ class AlphaEngine:
         self.stopped_early = False
         # 看板「停止训练」信号触发的安全停止
         self.user_stopped = False
+        self.completed_steps = 0
+        self._last_stag_restart_step = None
+        self._low_entropy_streak = 0
+        self._previous_init_dist = None
+        self._data_fingerprint = data_fingerprint(data_manager) if data_manager is not None else None
 
         # Fix 3: EMA reward baseline
         self._reward_ema: float | None = None
@@ -388,6 +432,14 @@ class AlphaEngine:
             if res is None:
                 return {'idx': idx, 'status': 'none', 'reward': -5.0,
                         'val_score': -5.0, 'fml': fml}
+            # target_ret has two sentinel tail values because no forward return
+            # exists there.  Keep those bars for feature generation, but never
+            # let them enter scoring, IC, or net-profit eligibility.
+            valid_t = min(res.shape[1], t_ret.shape[1]) - 2
+            if valid_t < 2:
+                raise ValueError("Need at least two observed forward-return bars")
+            res = res[:, :valid_t]
+            t_ret = t_ret[:, :valid_t]
             if res.std() < 1e-4:
                 return {'idx': idx, 'status': 'const', 'reward': -2.0,
                         'val_score': -2.0, 'fml': fml}
@@ -671,12 +723,17 @@ class AlphaEngine:
     # ── Main training loop ────────────────────────────────────────────────────
 
     def train(self, start_step: int = 0, end_step: int | None = None,
-              migration_hook=None, verbose_header: bool = True):
+              migration_hook=None, verbose_header: bool = True,
+              run_end_step: int | None = None, run_start_step: int | None = None):
         if self.data_manager is None:
             raise RuntimeError("AlphaEngine requires a data_manager.")
 
         if end_step is None:
             end_step = ModelConfig.TRAIN_STEPS
+        run_end_step = end_step if run_end_step is None else run_end_step
+        run_start_step = start_step if run_start_step is None else run_start_step
+        self.completed_steps = start_step
+        self.user_stopped = False
 
         if verbose_header:
             print("开始 Alpha 因子挖掘训练" +
@@ -695,7 +752,7 @@ class AlphaEngine:
                       + (f"；连续 {ModelConfig.STAG_AUTO_STOP_WINDOWS} 个窗口无进步自动结束"
                          if ModelConfig.STAG_AUTO_STOP_WINDOWS > 0 else ""))
 
-        T     = self.data_manager.target_ret.shape[1]
+        T     = self.data_manager.target_ret.shape[1] - 2
         folds = _build_walk_forward_folds(T, self.n_folds,
                                           gap=getattr(ModelConfig, 'WF_GAP', 20))
         # Even a single short-data fold must retain its reserved purge gap.
@@ -746,21 +803,21 @@ class AlphaEngine:
                                   disable=not sys.stderr.isatty(),
                                   leave=False,
                                   mininterval=5.0)
-        low_entropy_streak = 0
-        prev_init_dist     = None  # 用于计算相邻步分布差异 KL
-        run_t0             = time.time()  # 本次续训起点，用于日志里显示实际步速
+        low_entropy_streak = self._low_entropy_streak
+        prev_init_dist = self._previous_init_dist
         # 停止信号文件（看板「停止训练」写入；由训练入口脚本在启动时清理，
         # 引擎只读不删——岛模式下后跑的岛不能把信号吞掉）
-        stop_file          = _CHECKPOINT_DIR.parent / "TRAIN_STOP"
+        stop_file = root_path("TRAIN_STOP")
 
         for step in pbar:
-            if step % 2 == 0 and stop_file.exists():
-                # ── 看板「停止训练」：安全保存当前进度后退出 ─────────────
-                tqdm.write("[收到停止信号] 正在保存检查点/策略/曲线后退出…")
+            self._low_entropy_streak = low_entropy_streak
+            self._previous_init_dist = prev_init_dist
+            if (self.save_checkpoints and step > start_step
+                    and step % max(1, int(getattr(ModelConfig, "CHECKPOINT_EVERY", 10))) == 0):
+                self.save_checkpoint(self.completed_steps)
+            if stop_file.exists():
+                tqdm.write("[收到停止信号] 正在保存已完成进度后退出…")
                 self.user_stopped = True
-                if self.save_checkpoints:
-                    self.save_checkpoint(step + 1)
-                self._save_training_history_live()
                 break
             # ── Part A: Sample n_new new formulas ────────────────────
             inp_new = torch.zeros((n_new, 1), dtype=torch.long,
@@ -1027,6 +1084,7 @@ class AlphaEngine:
             self.opt.step()
             if self.use_lord:
                 self.lord_opt.step()
+            self.completed_steps = step + 1
 
             # ── Part D2: 分布细化指标 ────────────────────────────────
             dst = self._distribution_stats(prev_init_dist)
@@ -1097,16 +1155,6 @@ class AlphaEngine:
 
             self._save_training_history_live()
 
-            if self.save_checkpoints and ((step + 1) % max(1, int(getattr(ModelConfig, "CHECKPOINT_EVERY", 10))) == 0 or (step + 1) == end_step):
-                ckpt = self.save_checkpoint(step + 1)
-                tqdm.write(f"[检查点] → {ckpt} (最优={self.best_score:.3f})")
-                # 步速指示器：帮你分辨「训练变慢」是代码问题还是机器被拖慢
-                # （电池/降频/后台抢占时这里会明显变大；正常约 10-17 秒/步）
-                done = step + 1 - start_step
-                elapsed = time.time() - run_t0
-                tqdm.write(f"    步速 {elapsed/max(1,done):.1f} 秒/步"
-                           f"（本次已跑 {done} 步，累计 {elapsed/60:.0f} 分钟）")
-
             # ── Part F: Migration hook（多岛训练时交换精英）────────────
             if migration_hook is not None and (step + 1) % ModelConfig.MIGRATION_INTERVAL == 0:
                 tqdm.write(f"[迁移钩子 @ 第{step+1}步] 调用已注册钩子")
@@ -1122,8 +1170,22 @@ class AlphaEngine:
                 first = max(1, int(getattr(ModelConfig, "STAG_HARD_RESTART_FIRST", ModelConfig.STAGNATION_WINDOW)))
                 interval = max(1, int(getattr(
                     ModelConfig, "STAG_HARD_RESTART_INTERVAL", ModelConfig.STAGNATION_WINDOW)))
-                due = stag >= first and (stag - first) % interval == 0
+                # 短续训（如"再练 200 步"）：首次阈值若大于本次步数，整段都不会介入。
+                # 按本次步数压缩阈值，让它来得及扰动、重启后还有余量继续学习。
+                run_len = max(1, run_end_step - run_start_step)
+                first_effective = min(first, max(1, run_len // 3))
+                anchor = max(self._best_update_step, run_start_step)
+                if self._last_stag_restart_step is not None and self._last_stag_restart_step >= anchor:
+                    due_at = self._last_stag_restart_step + interval
+                else:
+                    due_at = anchor + first_effective
+                due = self.completed_steps >= due_at
+                # This is the overall run end, not an island migration boundary.
+                reserve = max(1, min(30, run_len // 3))
+                if run_end_step - self.completed_steps < reserve:
+                    due = False
                 if due:
+                    self._last_stag_restart_step = self.completed_steps
                     self._stag_windows_no_gain += 1
                     # 多次无效训练自动停止：连续 N 个停滞窗口仍无进步，
                     # 提前结束并保留当前最优（策略在循环外的收尾段落保存）
@@ -1252,6 +1314,11 @@ class AlphaEngine:
                         f"继续训练，不提前停止"
                     )
 
+        self._low_entropy_streak = low_entropy_streak
+        self._previous_init_dist = prev_init_dist
+        self._save_training_history_live()
+        if self.save_checkpoints:
+            self.save_checkpoint(self.completed_steps)
         # ── End of training ──────────────────────────────────────────
         # 仅当跑满最终步时才保存最终 strategy 和历史；岛模式的岛没有
         # target_symbol，策略由 IslandAlphaEngine 统一保存
@@ -1261,15 +1328,7 @@ class AlphaEngine:
 
             sym_tag = f"[{self.target_symbol}] " if self.target_symbol else ""
             self.training_history.pop('_low_entropy_streak', None)
-            hist_path = (
-                f"training_history_{self._file_tag()}.json"
-                if self.target_symbol else "training_history.json"
-            )
-            # P1-3: 原子写入
-            tmp_hist = hist_path + ".tmp"
-            with open(tmp_hist, "w", encoding="utf-8") as fp:
-                json.dump(self.training_history, fp)
-            os.replace(tmp_hist, hist_path)
+            self._save_training_history_live()
 
             print(f"\n[完成] {sym_tag}训练结束！")
             print(f"  最优验证分数 : {self.best_score:.4f}")
@@ -1294,16 +1353,12 @@ class AlphaEngine:
             return
         try:
             sym = self.history_tag or self._file_tag()
-            hist_path = f"training_history_{sym}.json"
+            hist_path = history_path(sym)
             payload = {
                 k: v for k, v in self.training_history.items()
                 if k != "_low_entropy_streak"
             }
-            # 原子写入：先写 tmp，再 os.replace 覆盖（POSIX/Windows 均原子）
-            tmp_path = hist_path + ".tmp"
-            with open(tmp_path, "w", encoding="utf-8") as fp:
-                json.dump(payload, fp)
-            os.replace(tmp_path, hist_path)
+            atomic_json_write(hist_path, json_safe(payload))
         except Exception as exc:  # noqa: BLE001
             # 静默吞掉会掩盖磁盘满/权限错误，至少打印告警
             try:
@@ -1320,7 +1375,7 @@ class AlphaEngine:
         """
         # 岛模式的岛没有 target_symbol（策略由 IslandAlphaEngine 统一保存），
         # 不能让它写通用策略文件
-        if self.best_formula is None or not self.target_symbol:
+        if self.best_formula is None or not self.target_symbol or not math.isfinite(self.best_score):
             return
         try:
             from .vocab import VOCAB_VERSION
@@ -1330,6 +1385,22 @@ class AlphaEngine:
                     tqdm.write(f"[评分隔离] 保留旧口径策略 {save_path}；新结果在检查点中，部署前需另存并独立验收。")
                     self._legacy_strategy_warned = True
                 return
+            # 续训保护：磁盘上同品种/同周期既有策略分数高于本轮结果时绝不覆盖，
+            # 避免“再练 200 步”后反而把更高分的旧策略换成分数更低的检查点结果。
+            p = pathlib.Path(save_path)
+            if p.exists():
+                try:
+                    existing_score = float(json.loads(p.read_text(encoding="utf-8")).get("best_score", float("-inf")))
+                except (OSError, ValueError, TypeError, AttributeError):
+                    existing_score = float("-inf")
+                if math.isfinite(existing_score) and math.isfinite(self.best_score) and self.best_score < existing_score:
+                    if not getattr(self, '_strategy_downgrade_warned', False):
+                        tqdm.write(
+                            f"[续训保护] 既有策略 {save_path} 分数更高（{existing_score:.4f} > {self.best_score:.4f}），"
+                            "本轮结果仅在检查点中，不覆盖策略文件。"
+                        )
+                        self._strategy_downgrade_warned = True
+                    return
             pathlib.Path(save_path).parent.mkdir(parents=True, exist_ok=True)
 
             existing: dict = {}
@@ -1343,12 +1414,14 @@ class AlphaEngine:
                     existing = {}
 
             strategy_data = {
-                "scoring_version": SCORING_VERSION,
+                "scoring_version": _current_scoring_version(),
+                "feature_semantics_version": _feature_semantics_version(),
                 "vocab_version": VOCAB_VERSION,
                 "symbol": self.target_symbol,
                 "timeframe": self.timeframe,
                 "formula": self.best_formula,
                 "best_score": self.best_score,
+                "training_context": self.training_context(),
                 "formula_decoded": self._decode_formula(self.best_formula),
             }
             # 保留训练数据路径等元数据，避免 live 保存把 data_file 冲掉
@@ -1367,11 +1440,8 @@ class AlphaEngine:
                 if data_file and not strategy_data.get("mode"):
                     strategy_data["mode"] = "parquet_file"
 
-            # 原子写入：先写 tmp，再 os.replace 覆盖
-            tmp_path = save_path + ".tmp"
-            with open(tmp_path, "w", encoding="utf-8") as fp:
-                json.dump(strategy_data, fp, indent=2, ensure_ascii=False)
-            os.replace(tmp_path, save_path)
+            if not save_strategy_artifact(save_path, strategy_data):
+                tqdm.write(f"[策略保护] Preserved existing strategy/context: {save_path}")
         except Exception as exc:  # noqa: BLE001
             # 静默吞掉会让用户误以为策略已保存，实则没有
             try:
@@ -1381,11 +1451,80 @@ class AlphaEngine:
 
     # ── Checkpoint save / load ────────────────────────────────────────────────
 
+    def training_context(self) -> dict:
+        from config import Config
+        from . import features, vm
+        identity = getattr(self, "context_symbol", None) or self.target_symbol
+        if identity is None:
+            identity = getattr(self.data_manager, "symbol", None)
+        return {
+            "symbol": identity,
+            "timeframe": self.timeframe or getattr(self.data_manager, "timeframe", None),
+            "data_fingerprint": self._data_fingerprint,
+            "evaluation": {
+                "scoring_version": _current_scoring_version(),
+                "target_return_policy": "observed-open-t+1-to-t+2-v1",
+                "feature_semantics_version": _feature_semantics_version(),
+                "feature_names": list(features.FEATURE_NAMES),
+                "normalization_version": getattr(vm, "NORMALIZATION_VERSION", "legacy"),
+                "normalization_window": getattr(vm, "NORMALIZATION_WINDOW", 500),
+                "vocab_version": VOCAB_VERSION,
+                "n_folds": self.n_folds,
+                "cost_rate": float(self.bt.cost_rate),
+                "periods_per_year": self._evaluation_periods_per_year(),
+                "min_trade_exposure": float(Config.MIN_TRADE_EXPOSURE),
+                "parameters": {key: getattr(ModelConfig, key) for key in (
+                    "WF_GAP", "REWARD_MODE", "REWARD_ALPHA", "IC_GATE_THRESH",
+                    "IC_GATE_MULT", "IC_NEG_MULT", "BETA_NEUTRAL_PENALTY",
+                    "HALF_CONSISTENCY_BONUS", "BETA_NEUTRAL_THRESH",
+                    "BETA_NEUTRAL_LIGHT_THRESH", "MAX_FORMULA_LEN")},
+            },
+        }
+
+    def _evaluation_periods_per_year(self):
+        raw = getattr(self.data_manager, "raw_dict", None) or {}
+        if raw.get("time") is not None:
+            return estimate_periods_per_year(raw["time"])
+        return self.bt.periods_per_year
+
+    def validate_checkpoint_context(self, ckpt: dict) -> bool:
+        """Reject wrong identity before mutation; True means weight-only hotstart."""
+        FORMULA_VOCAB.verify(ckpt.get("vocab_version"))
+        current = self.training_context()
+        saved = ckpt.get("training_context")
+        if saved is None:
+            if current["symbol"] is not None or current["timeframe"] is not None:
+                raise ValueError("Checkpoint has no symbol/timeframe context; explicit fresh training required")
+            return True
+        for key in ("symbol", "timeframe"):
+            if saved.get(key) != current.get(key):
+                raise ValueError(f"Checkpoint {key} mismatch: {saved.get(key)!r} != {current.get(key)!r}")
+        return (saved != current or ckpt.get("scoring_version") != _current_scoring_version())
+
+    def _clear_rankings(self, reset_stops=False):
+        self.best_score, self.best_formula, self._best_snapshot = -float("inf"), None, None
+        self.factor_pool, self._elite_pool = [], []
+        self._factor_pool_counter = self._elite_counter = 0
+        self._reward_ema, self._reward_ema_step = None, 0
+        self.training_history = {key: [] for key in self.training_history}
+        self._low_entropy_streak, self._previous_init_dist = 0, None
+        if reset_stops:
+            self._restart_count = self._stag_windows_no_gain = self._stagnation_steps = 0
+            self._best_update_step = self.completed_steps
+            self._last_stag_restart_step = None
+            self.stopped_early = self.user_stopped = False
+
     def checkpoint_state(self, step: int) -> dict:
         """返回可供单引擎和岛模式复用的完整续训状态。"""
         return {
             "step":                 step,
-            "scoring_version":      SCORING_VERSION,
+            "scoring_version":      _current_scoring_version(),
+            "feature_semantics_version": _feature_semantics_version(),
+            "training_context":     self.training_context(),
+            "rng_state":            rng_state(),
+            "low_entropy_streak":   self._low_entropy_streak,
+            "previous_init_dist":   self._previous_init_dist,
+            "last_stag_restart_step": self._last_stag_restart_step,
             "vocab_version":        VOCAB_VERSION,
             "model_state_dict":     self.model.state_dict(),
             "optimizer_state_dict": self.opt.state_dict(),
@@ -1418,8 +1557,9 @@ class AlphaEngine:
                 f"当前词表版本 {FORMULA_VOCAB.version!r}；需重新训练后加载"
             )
         FORMULA_VOCAB.verify(artifact_version)
+        hotstart = self.validate_checkpoint_context(ckpt)
 
-        self.model.load_state_dict(ckpt["model_state_dict"], strict=False)
+        self.model.load_state_dict(ckpt["model_state_dict"], strict=True)
         self.opt.load_state_dict(ckpt["optimizer_state_dict"])
         self.best_score = ckpt.get("best_score", -float("inf"))
         self.best_formula = ckpt.get("best_formula")
@@ -1437,46 +1577,42 @@ class AlphaEngine:
         self._reward_ema_step = ckpt.get("reward_ema_step", 0)
         for k, v in ckpt.get("training_history", {}).items():
             self.training_history[k] = v
-        if ckpt.get("scoring_version") != SCORING_VERSION:
-            # Keep learned parameters, optimizer, completed steps and hard-stop
-            # counters. Old objective rankings must not block new champions or
-            # bias elite replay. Never rewrite the source checkpoint here.
-            self.best_score = -float('inf')
-            self.best_formula = None
-            self._best_snapshot = None
-            self.factor_pool = []
-            self._factor_pool_counter = 0
-            self._elite_pool = []
-            self._elite_counter = 0
-            self._reward_ema = None
-            self._reward_ema_step = 0
-            self.training_history = {k: [] for k in self.training_history}
-            print(f"[评分隔离] 旧检查点排名/精英/EMA已清空；权重、步数及停止状态保留。新口径={SCORING_VERSION}")
-        return int(ckpt.get("step", 0))
+        self.completed_steps = int(ckpt.get("step", 0))
+        self._low_entropy_streak = int(ckpt.get("low_entropy_streak", 0))
+        self._previous_init_dist = ckpt.get("previous_init_dist")
+        self._last_stag_restart_step = ckpt.get("last_stag_restart_step")
+        self.user_stopped = False
+        if hotstart:
+            # Preserve weights, optimizer and completed-step accounting, but
+            # refreshed bars/evaluation cannot inherit scores or hard stops.
+            refresh = ckpt.get("training_context") != self.training_context()
+            self._clear_rankings(reset_stops=refresh)
+            print("[Hotstart] Preserved learned weights; cleared stale rankings/pools/history")
+        else:
+            restore_rng(ckpt.get("rng_state"))
+        self._hotstarted = hotstart
+        return self.completed_steps
 
     def save_checkpoint(self, step: int, path: str | None = None) -> str:
-        _CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
+        ckpt_dir = checkpoint_dir()
+        ckpt_dir.mkdir(parents=True, exist_ok=True)
         # 检查点文件名带周期（ckpt_{symbol}_{tf}_step_*.pt），不同周期互不覆盖；
         # 同时作为清理前缀，保证只清理本品种本周期的检查点。
         tag = self._file_tag()
         sym_tag = f"_{tag}" if tag else ""
         if path is None:
-            path = str(_CHECKPOINT_DIR / f"ckpt{sym_tag}_step_{step:04d}.pt")
+            path = str(ckpt_dir / f"ckpt{sym_tag}_step_{step:04d}.pt")
         ckpt = self.checkpoint_state(step)
-        # P1-3: 原子写入（tmp + os.replace），避免 Ctrl+C / OOM 打断导致
-        # checkpoint 文件截断损坏——既丢新最优也丢旧最优
-        tmp_path = path + ".tmp"
-        torch.save(ckpt, tmp_path)
-        os.replace(tmp_path, path)
+        path = str(root_path(path)) if not pathlib.Path(path).is_absolute() else str(path)
+        atomic_write(path, lambda tmp: torch.save(ckpt, tmp))
         # 只保留同品种最近 KEEP_CHECKPOINTS 个检查点（每个约 170MB），
         # 防止 checkpoints/ 无限膨胀；刚写入的这条是最新的一定保留。
         try:
             keep = max(1, int(getattr(ModelConfig, "KEEP_CHECKPOINTS", 3)))
             prefix = f"ckpt{sym_tag}_step_"
             olds = sorted(
-                (_CHECKPOINT_DIR / f for f in os.listdir(_CHECKPOINT_DIR)
-                 if f.startswith(prefix) and f.endswith(".pt")),
-                key=lambda p: p.stat().st_mtime,
+                ckpt_dir.glob(f"{prefix}*.pt"),
+                key=checkpoint_step,
             )
             for old in olds[:-keep]:
                 old.unlink(missing_ok=True)
@@ -1485,7 +1621,7 @@ class AlphaEngine:
         return path
 
     def load_checkpoint(self, path: str) -> int:
-        ckpt = torch.load(path, map_location=ModelConfig.DEVICE)
+        ckpt = torch.load(path, map_location=ModelConfig.DEVICE, weights_only=True)
 
         completed = self.restore_checkpoint_state(ckpt)
         tqdm.write(f"[检查点] 已从 {path} 恢复。"

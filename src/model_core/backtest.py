@@ -21,12 +21,13 @@ import math
 import torch
 from torch import Tensor
 
-from strategy_manager.signal import compute_target_positions_stateless
+from strategy_manager.signal import compute_target_positions_stateless, _min_trade_exposure
 from .config import ModelConfig
 
 _H1_PERIODS_PER_YEAR = 6240
 _SORTINO_CLIP        = 20.0
-SCORING_VERSION = "aligned-net-v2"
+SCORING_VERSION = "causal-portfolio-v3"
+SCORING_SEMANTICS = "continuous_exposure_log_return_cost_proxy_not_fixed_lot_bid_ask"
 
 _SECONDS_PER_YEAR = 365.25 * 86400.0
 
@@ -161,9 +162,9 @@ class MT5Backtest:
 
     def _calmar(self, pnl: Tensor, eps: float = 1e-8) -> Tensor:
         """Calmar = annualized_return / max_drawdown（截断到 [-10, 10]）。"""
-        flat      = pnl.reshape(-1)
-        ann_ret   = flat.mean() * self.periods_per_year
-        cum       = torch.cumsum(flat, dim=0)
+        portfolio = pnl.mean(dim=0) if pnl.ndim == 2 else pnl
+        ann_ret   = portfolio.mean() * self.periods_per_year
+        cum       = torch.cat([portfolio.new_zeros(1), portfolio.cumsum(dim=0)])
         peak      = torch.cummax(cum, dim=0).values
         drawdown  = (peak - cum).max()
         drawdown  = torch.clamp(drawdown, min=eps)
@@ -291,25 +292,9 @@ class MT5Backtest:
         目标：每 12 bar 一笔（H1 每天约一笔）。
         """
         N, T = position.shape
-        pos_2d = position.tolist()
-        all_runs, total_trades = [], 0
-
-        for n in range(N):
-            runs, cur_len, cur_dir = [], 0, 0
-            for p in pos_2d[n]:
-                pi = int(p)
-                if pi != 0:
-                    if pi == cur_dir:
-                        cur_len += 1
-                    else:
-                        if cur_len > 0: runs.append(cur_len)
-                        cur_dir, cur_len = pi, 1
-                else:
-                    if cur_len > 0: runs.append(cur_len)
-                    cur_dir, cur_len = 0, 0
-            if cur_len > 0: runs.append(cur_len)
-            all_runs.extend(runs)
-            total_trades += len(runs)
+        directions, starts = self._direction_runs(position)
+        total_trades = int(starts.sum().item())
+        held_bars = int((directions != 0).sum().item())
 
         total_bars    = N * T
         target_trades = total_bars / 12.0
@@ -330,11 +315,25 @@ class MT5Backtest:
             freq_score = -2.0
 
         hold_bonus = 0.0
-        if all_runs:
-            avg_hold = sum(all_runs) / len(all_runs)
+        if total_trades:
+            avg_hold = held_bars / total_trades
             hold_bonus = min(0.3, math.log(max(avg_hold, 1.0)) / math.log(30.0) * 0.3)
 
         return float(freq_score + hold_bonus)
+
+    @staticmethod
+    def _direction_runs(position: Tensor) -> tuple[Tensor, Tensor]:
+        """Vectorized direction runs under the shared executable threshold."""
+        # Binary-search the shared scalar API on a fixed grid: no duplicated
+        # Config/default threshold contract and no loop over bar observations.
+        from strategy_manager.signal import _min_trade_exposure
+        threshold = _min_trade_exposure()
+        directions = torch.where(position >= threshold, 1,
+                                 torch.where(position <= -threshold, -1, 0))
+        previous = torch.zeros_like(directions)
+        previous[:, 1:] = directions[:, :-1]
+        starts = (directions != 0) & (directions != previous)
+        return directions, starts
 
     def _beta_neutral_penalty(self, position: Tensor) -> float:
         """Beta 中性惩罚：多空比例严重失衡时扣分。
@@ -586,15 +585,10 @@ class MT5Backtest:
             )
 
         per_sym_sortino     = []
-        per_sym_trade_count = []
+        _, run_starts = self._direction_runs(position)
+        per_sym_trade_count = run_starts.sum(dim=1).tolist()
         for n in range(N):
             per_sym_sortino.append(self._sortino(pnl[n]).item())
-            # 连续仓位下，用 |position| 变化来估算交易次数
-            pos_n = position[n].abs()
-            # 视 tanh 输出均值作为持仓量，换手次数用前后差异估计
-            diff = (pos_n[1:] - pos_n[:-1]).abs()
-            trades = int((diff > 0.1).sum().item())
-            per_sym_trade_count.append(trades)
 
         sym_cons = self._symbol_consistency(
             per_sym_sortino, per_sym_trade_count, eval_bars=eval_bars

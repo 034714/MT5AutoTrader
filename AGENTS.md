@@ -2,7 +2,7 @@
 
 ## Testing policy (read this before running any tests)
 
-- **Do NOT run the full suite after every task.** Tests live in `src/tests/test_trading.py` and are domain-filtered:
+- **Do NOT run the full suite after every task.** Tests live under `src/tests/`; `test_trading.py` supports domain-filtered runs:
   - `python src/tests/test_trading.py risk` — 风控/止损/阶梯/手动止损
   - `... runner` — 交易流程/台账/策略加载
   - `... sr` — 支撑/阻力、止盈一半、手动覆盖
@@ -18,7 +18,7 @@
 - ALL Python code lives in `src/` (app.py, config.py, trading/, model_core/, web/, tests/, ...). The project root intentionally holds only user-facing files (bat, txt, md) plus runtime data (strategies/, checkpoints/, logs/, portfolio_state.json, trader_config.json).
 - Two path constants matter: `SRC` = src/ (on sys.path, web dir), `ROOT` = project root (config/logs/strategies/STOP_SIGNAL). config.py exposes ROOT_DIR; app.py and trading/runner.py define their own — keep them consistent when moving files.
 - Subprocess spawns from the dashboard: training/backtest run `src/train_file.py` etc. with cwd=project root (their relative writes land at root); the runner is spawned via `python -c "import sys, runpy; sys.path.insert(0, r'{SRC}'); runpy.run_module('trading.runner', run_name='__main__')"` with cwd=src (its ROOT constant points back at the project root). Do NOT switch back to `python -m trading.runner`: the portable package's embedded Python (`runtime\python.exe` with `python311._pth`) runs in isolated mode and never adds cwd to sys.path, so `-m` fails with `No module named 'trading'` (PYTHONPATH is ignored too).
-- Training timeframe is selectable (M5..D1); parquet filenames are `{symbol}_{TF}.parquet`. `training_history_{stem}.json` at root feeds `/api/training/curve`.
+- Training timeframe is selectable (M5..D1); parquet filenames are `{symbol}_{TF}.parquet`. Training artifacts are anchored to the project root, independent of cwd: `checkpoints/`, `strategies/`, and **only** `training_history/`. `/api/training/curve` reads `training_history/training_history_{tag}.json` (island aggregate: `{tag}_island`; per island: `{tag}__islN`). Root-level `training_history*.json` files are neither read nor automatically migrated; do not add a root fallback.
 - Training is CPU-only by design (formula tensors are tiny; GPU/DirectML was measured slower and the feature was removed). Do not reintroduce device selection or install GPU packages without explicit user consent.
 - Python interpreter lookup order (app.py `_venv_python()` and `start.bat` agree): project `.venv` → `fallback_python.txt` (machine-specific absolute path, gitignored) → `sys.executable`/PATH python. Never hardcode an external project's venv path in code.
 
@@ -59,9 +59,10 @@
 ## Trading safety
 
 - `trader_config.json` defaults to `dry_run=true` and no bindings.
-- Switching to real order mode requires an explicit UI confirmation.
-- Manual orders require an explicit UI confirmation.
-- `order_check` is read-only and must never be described as a filled order.
+- Real-mode switching and manual order/position/pending/SL/TP/partial-TP mutations require strict boolean `confirmed=true` plus a fresh `account_key=[server, login, currency]` (integer login). The backend validates the key against the current terminal account; never fabricate it or reuse a key from another account. The frontend rejects stale/changed confirmations.
+- `order_check` and pending `check_only=true` are read-only previews: no execution confirmation is needed, but the account key is still required. Never describe a check as a filled order.
+- Live Runner state is attributed by `account_identity=[server, login, currency]`. Missing identity pauses live actions; an account switch stops that Runner, rather than adopting the new account. Nonempty legacy unattributed live state requires manual reconciliation. Restarting alone does not reassign an old-account book. Overrides also carry `account_key`; unscoped/mismatched overrides are ignored.
+- Account confirmation is a software guard, not authentication or a broker-atomic transaction. Do not claim real execution was validated from mocks, dry-run, training scores or simulated backtests.
 - Never send a real order for testing without the user specifying the exact symbol, direction, and lot size in the current request.
 - A dry-run position in `portfolio_state.json` is not a real MT5 position. Always query MT5 read-only before claiming an order was filled or closed.
 
@@ -74,11 +75,11 @@
 
 ## Manual pending orders (限价/条件单)
 
-- `POST /api/mt5/pending/order {confirmed, symbol, side, price, lot, sl, tp}` places a pending order; `check_only: true` runs `mt5.order_check` only and must never place anything. The endpoint sets `client.dry_run = False` after user confirmation, same policy as market orders.
+- `POST /api/mt5/pending/order {confirmed, account_key, symbol, side, price, lot, sl, tp}` places a pending order; `check_only: true` runs `mt5.order_check` only and must never place anything. The endpoint sets `client.dry_run = False` after user confirmation, same policy as market orders.
 - Order type is auto-picked by `trading.mt5_client.decide_pending_kind(side, price, bid, ask, min_dist)` (pure function, tested): BUY above ask → BUY STOP（到价市价买）, below → BUY LIMIT; SELL mirrored; price inside `stops_level × point` of the market is rejected with a Chinese message. Keep this function pure — the client maps its "LIMIT"/"STOP" strings to MT5 constants.
-- `GET /api/mt5/pending/list` returns ALL magics (manual pendings visible, like live positions); `pending_to_dict` serializes. Cancel via `POST /api/mt5/pending/cancel {confirmed, ticket}` → `TRADE_ACTION_REMOVE`.
+- `GET /api/mt5/pending/list` returns ALL magics (manual pendings visible, like live positions); `pending_to_dict` serializes. Cancel via `POST /api/mt5/pending/cancel {confirmed, account_key, ticket}` → `TRADE_ACTION_REMOVE`.
 - Chart UX (index.html): right-click → 「挂买单/挂卖单」creates `srChart.draft` {side, symbol, price, sl, tp, lot}; draft lines register as `d-entry`/`d-sl`/`d-tp` in `srChart.layout.lines` so the existing drag machinery grabs them. Dragging `d-entry` TRANSLATES sl/tp by the same offset (structure moves as a unit); dragging d-sl/d-tp moves that line only. `mouseup` on a `d-*` line must NOT open the confirm dialog (only real position sl/tp commits do); confirmation happens via the floating `#sr-draft-bar` → `srDraftConfirm()` → askConfirm with price/lot/sl/tp inputs. Default draft SL/TP offsets: max(1.5×ATR, 0.8%) / max(3×ATR, 1.6%).
-- Draggable lines all register in `srChart.layout.lines` with distinct `which` prefixes: `d-*` (draft), `pos-entry` (position entry), `pd<ticket>` (real pending order), plus `sl`/`tp`/`partial` (position levels). Dragging `pos-entry` only PREVIEWS a group shift of SL/TP (`srChart.entryShift`, entry itself never moves) and on mouseup `commitEntryDrag` POSTs BOTH `/api/mt5/position/sl` and `/tp` (dry-run positions: SL override only). Dragging a pending line shifts its price+sl/tp visually and `commitPendingDrag` POSTs `/api/mt5/pending/modify {confirmed, ticket, price, sl, tp}` → `MT5Client.modify_order` (TRADE_ACTION_MODIFY; MT5 cannot change a pending order's volume — the dialog says so). Hit tolerance is ±8px.
+- Draggable lines all register in `srChart.layout.lines` with distinct `which` prefixes: `d-*` (draft), `pos-entry` (position entry), `pd<ticket>` (real pending order), plus `sl`/`tp`/`partial` (position levels). Dragging `pos-entry` only PREVIEWS a group shift of SL/TP (`srChart.entryShift`, entry itself never moves) and on mouseup `commitEntryDrag` POSTs BOTH `/api/mt5/position/sl` and `/tp` (dry-run positions: SL override only). Dragging a pending line shifts its price+sl/tp visually and `commitPendingDrag` POSTs `/api/mt5/pending/modify {confirmed, account_key, ticket, price, sl, tp}` → `MT5Client.modify_order` (TRADE_ACTION_MODIFY; MT5 cannot change a pending order's volume — the dialog says so). Hit tolerance is ±8px.
 - The chart-page right panel has a 「设置止盈止损」 form (`applySlTp`) reusing `/api/mt5/position/sl|tp`; SL can only be changed, never cleared (`/sl` rejects sl<=0 by design), TP accepts 0 = clear. The two market-order check buttons (检查买单/卖单) were removed on user request — `/api/mt5/order_check` endpoint stays but has no UI button.
 
 ## Support/Resistance (S/R) engine
@@ -103,8 +104,24 @@
 
 ## Training data
 
-- The user-facing training flow may call `mt5_train.py`, which fetches H1 bars from the running MT5 terminal, saves an internal Parquet cache, then invokes `train_file.py`.
-- The training core remains offline after the cache is written; this keeps training reproducible.
-- The current machine's existing cache directory is `D:\K线数据`. MT5-fetched files are named `{symbol}_H1.parquet`; a symbol that already ends with `_` (e.g. `ETHUSD_`) produces a double underscore: `ETHUSD__H1.parquet`. `parse_parquet_filename` handles this correctly via `rsplit("_", 1)`.
-- Resume training: `train_file.py` auto-resumes from `checkpoints/ckpt_{symbol}_step_*.pt` unless `--from-scratch`. The `--steps` value is a TOTAL step target — resuming with a value ≤ the checkpoint step is a no-op that just re-saves the strategy. A short 60-step run may never hit a checkpoint save boundary, leaving nothing to resume from.
-- `TradingRunner._refresh_bindings` tracks strategy file mtime and hot-reloads a retrained strategy without restarting the runner (log line "检测到重新训练，已热更新").
+- The MT5 training flow fetches the selected timeframe through `mt5_train.py`, saves a Parquet cache, then calls local training. Training after cache creation does not require MT5; reproducible continuation requires unchanged data/evaluation context and compatible runtime.
+- The current machine's cache directory is `D:\K线数据` (configurable). Files are `{symbol}_{TF}.parquet`; a trailing underscore in the symbol produces e.g. `ETHUSD__H1.parquet`. `parse_parquet_filename` handles this via `rsplit("_", 1)`.
+- File training uses `ckpt_{symbol}_{TF}_step_*.pt`; island training uses `island_ckpt_{symbol}_{TF}_step_*.pt`. Latest selection/retention sorts numeric step, not filename lexicographic order. A positive `--steps N` in either entry point means ADDITIONAL steps from the restored starting step; omitted/0 uses the configured total target. `--from-scratch` removes that mode/tag's checkpoints and curves, not the strategy file.
+- Checkpoints include `training_context`: symbol, timeframe, data-content fingerprint and evaluation identity (scoring/feature/normalization/vocab versions, feature names, folds, cost, annualization, executable threshold and reward parameters). Validate before mutating state; wrong symbol/timeframe is rejected. File checkpoints without identity context and incompatible/missing vocab versions require explicit fresh training, not silent resume.
+- Equal-context resume restores model, optimizer, ranking pools, history, stop/diversity state and RNG state. Same-identity changed data/evaluation context is a hotstart: retain model, optimizer and completed-step accounting but clear champions/scores, pools, reward baseline and curves; context refresh resets stagnation/early-stop state. Never carry old scores into a new evaluation context.
+- Checkpoint `step` records ACTUAL completed updates (`completed_steps`), not the planned target or zero-based curve index. Single engine defaults: `CHECKPOINT_EVERY=10`, `KEEP_CHECKPOINTS=2`; final save also runs after normal completion, early stop or a handled `TRAIN_STOP`, including short runs. Island interrupted payloads retain phase-start top-level step, `phase_interrupted` and each island's completed count; resume must not replay finished updates. Island count/migration settings must match. Champion export uses its actual completed count.
+- Web stop writes `TRAIN_STOP`, waits up to 40 seconds, then force-kills as fallback. Do not promise a final save after force-kill/crash/write failure. Shared artifact writes use same-directory temp files + `os.replace`; no fsync or power-loss durability claim. Missing/nonfinite history values become JSON null; invalid/nonfinite champions are not published.
+- Existing strategies are protected across legacy scoring, differing feature semantics or differing complete context; within equal context only a higher finite score may replace them. A protected on-disk strategy can remain old even after new training. Back up and explicitly handle that file before publishing a new context; do not weaken the guard or silently delete it.
+- `TradingRunner._refresh_bindings` watches already bound strategy files and hot-reloads actual on-disk updates. It does not bind new strategies or imply protected files were overwritten.
+
+## Feature and scoring semantics
+
+- New training defaults to `causal-features-v2`, scoring `causal-portfolio-v3`, and VM normalization `causal-prefix-rolling500-v2`. Single-symbol bars 1..499 are neutral; bar 500 is first eligible, using prefix-only constant detection and rolling 500-bar normalization. Multi-symbol normalization is same-time cross-sectional. Never restore full-series constant tests for new training/quick backtests.
+- Deployed strategies without `feature_semantics_version` opt into `legacy-v1` feature calculations and legacy normalization (its global constant gate is not causal). Unknown versions are rejected; vocab compatibility still applies. Legacy calculation compatibility does not restore old data loaders, score comparability or checkpoint identity compatibility.
+- Training reward is a continuous-exposure/log-return/turnover-cost proxy, NOT fixed-lot Bid/Ask PnL or realized account-currency profit. The validation slice is used for champion selection, so it is not an untouched final out-of-sample test.
+- `trading/quick_backtest.py` is a read-only fixed-lot, single-position simulation on closed MT5 bars: signal close to next open, forced last closed-bar close exit, Bid OHLC + bar-spread Ask approximation, user-assumed slippage/commission, no swap. `order_calc_profit` uses current contract/FX conversion, not historical FX. It never sends orders, starts Runner or writes artifacts.
+- Quick backtest always uses the new causal features/normalization, even for `legacy-v1` strategies; disclose any deployed-signal mismatch. It does not simulate SL/TP, ladder/S/R/partial TP, full risk, margin, liquidity or failed fills; drawdown is bar-close liquidation equity, not intrabar extremes. Keep it distinct from training proxy, offline reports and actual deal history. None proves live execution correctness or future profitability.
+
+## Offline dashboard process
+
+- `MT5AUTOTRADER_OFFLINE=1` is process-scoped: dashboard MT5 client access returns None, Runner start and direct-MT5 training are rejected; the web UI and local-file training remain available. Do not edit user trading config to enable it. Normal `start.bat` restart without inheriting this variable restores default behavior; this mode is not dry-run or live validation.

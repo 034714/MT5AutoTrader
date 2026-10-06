@@ -23,7 +23,7 @@ import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse
 from loguru import logger
 
@@ -33,9 +33,11 @@ ROOT = SRC.parent
 sys.path.insert(0, str(SRC))
 
 from config import (  # noqa: E402
+    CONFIG_LOCK,
     Config,
     load_trader_config,
     save_trader_config,
+    validate_trader_config,
 )
 from trading.signal_engine import (  # noqa: E402
     StrategyError,
@@ -54,6 +56,9 @@ STOP_FILE = ROOT / "STOP_SIGNAL"
 STRATEGIES_DIR = ROOT / "strategies"
 BACKTEST_OUTPUT = ROOT / "backtest_output"
 _quick_bt_lock = threading.Lock()  # Bound expensive requests to one at a time.
+_runner_start_lock = threading.Lock()
+_runner_process = None
+_job_lock = threading.RLock()
 CREATE_NO_WINDOW = 0x08000000
 CREATE_NEW_PROCESS_GROUP = 0x00000200
 
@@ -61,7 +66,28 @@ app = FastAPI(title="MT5AutoTrader", version="1.1.0")
 
 
 @app.middleware("http")
-async def no_cache(request, call_next):
+async def local_origin_guard(request: Request, call_next):
+    from urllib.parse import urlsplit
+    allowed = {"localhost", "127.0.0.1", "::1"}
+    authority = None
+    try:
+        authority = urlsplit("//" + (request.headers.get("host") or ""))
+        host = authority.hostname
+        authority.port  # Reject malformed ports.
+    except ValueError:
+        host = None
+    if host not in allowed or authority.username is not None or authority.password is not None or authority.path or authority.query or authority.fragment:
+        return HTMLResponse("forbidden host", status_code=403)
+    origin = request.headers.get("origin")
+    if origin:
+        try:
+            parsed = urlsplit(origin)
+            parsed.port
+            valid = parsed.scheme in ("http", "https") and parsed.hostname in allowed and parsed.username is None and parsed.password is None and not parsed.path and not parsed.query and not parsed.fragment
+        except ValueError:
+            valid = False
+        if not valid:
+            return HTMLResponse("forbidden origin", status_code=403)
     response = await call_next(request)
     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return response
@@ -70,7 +96,7 @@ async def no_cache(request, call_next):
 # ── 工具 ────────────────────────────────────────────────────────────
 
 def _venv_python() -> str:
-    """训练/Runner 子进程使用的 Python 解释器，优先级：
+    r"""训练/Runner 子进程使用的 Python 解释器，优先级：
     1. 本项目 .venv（推荐：在项目根目录 python -m venv .venv 并安装 requirements.txt）
     2. 便携包自带的 runtime\python.exe（GitHub Release 的 Windows 整合包）
     3. fallback_python.txt 里记录的绝对路径（本机过渡期兜底，不入 git）
@@ -102,16 +128,39 @@ def _pid_alive(pid: int) -> bool:
     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
     STILL_ACTIVE = 259
     kernel32 = ctypes.windll.kernel32
+    kernel32.OpenProcess.restype = ctypes.c_void_p
     handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
     if not handle:
         return False
     try:
         exit_code = ctypes.c_ulong()
-        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+        if not kernel32.GetExitCodeProcess(ctypes.c_void_p(handle), ctypes.byref(exit_code)):
             return False
         return exit_code.value == STILL_ACTIVE
     finally:
-        kernel32.CloseHandle(handle)
+        kernel32.CloseHandle(ctypes.c_void_p(handle))
+
+
+def _launcher_pid_verified(pid: int) -> bool:
+    """Only trust a PID whose executable matches our selected launcher."""
+    if not _pid_alive(pid):
+        return False
+    try:
+        kernel32 = ctypes.windll.kernel32
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        handle = kernel32.OpenProcess(0x1000, False, pid)
+        if not handle:
+            return False
+        try:
+            size = ctypes.c_ulong(32768)
+            image = ctypes.create_unicode_buffer(size.value)
+            if not kernel32.QueryFullProcessImageNameW(ctypes.c_void_p(handle), 0, image, ctypes.byref(size)):
+                return False
+            return Path(image.value).resolve() == Path(_venv_python()).resolve()
+        finally:
+            kernel32.CloseHandle(ctypes.c_void_p(handle))
+    except (AttributeError, OSError, ValueError):
+        return False
 
 
 def _strip_ansi(text: str) -> str:
@@ -134,23 +183,35 @@ def _tail_file(path: Path, lines: int = 50, max_bytes: int = 200_000) -> str:
 
 
 def _runner_alive() -> dict:
-    """runner 存活状态：优先看状态文件新鲜度 + PID 检测。"""
-    if not STATUS_FILE.exists():
-        return {"alive": False, "status": None}
+    status = None
     try:
-        status = json.loads(STATUS_FILE.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {"alive": False, "status": None}
-    pid = int(status.get("pid", 0) or 0)
-    alive = _pid_alive(pid)
-    fresh = False
-    try:
-        age = time.time() - STATUS_FILE.stat().st_mtime
-        fresh = age < 60  # 状态文件 10 秒内会刷新，60 秒未刷新视为僵死
-    except OSError:
+        loaded = json.loads(STATUS_FILE.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            status = loaded
+    except (ValueError, OSError):
         pass
-    status["alive"] = alive and fresh and bool(status.get("running"))
-    return {"alive": status["alive"], "status": status}
+    process_alive = _runner_process is not None and _runner_process.poll() is None
+    fresh = False
+    if status:
+        pid = status.get("pid")
+        if type(pid) is int and pid > 0:
+            process_alive = process_alive or _pid_alive(pid)
+        try:
+            fresh = 0 <= time.time() - STATUS_FILE.stat().st_mtime < 60
+        except OSError:
+            pass
+    # A launcher may still be connecting before the child writes status.
+    try:
+        launcher_pid = int(RUNNER_PID_FILE.read_text(encoding="utf-8").strip())
+        process_alive = process_alive or _launcher_pid_verified(launcher_pid)
+    except (ValueError, OSError):
+        pass
+    ready = bool(process_alive and fresh and status and status.get("running") is True
+                 and status.get("phase") not in ("starting", "waiting", "error", "stopped"))
+    if status:
+        status["alive"] = ready
+        status["process_alive"] = process_alive
+    return {"alive": ready, "ready": ready, "process_alive": process_alive, "status": status}
 
 
 # ── MT5 按需连接（看板进程内，用于账户信息/品种列表/手动交易）──────────
@@ -160,6 +221,8 @@ _mt5_client = None
 
 def _get_mt5_client():
     global _mt5_client
+    if os.environ.get("MT5AUTOTRADER_OFFLINE") == "1":
+        return None
     if _mt5_client is not None and _mt5_client.connected:
         return _mt5_client
     try:
@@ -196,6 +259,7 @@ def _live_positions(client) -> tuple[list, int | None]:
     """
     server_offset = client.server_time_offset()
     result: list = []
+    key = _account_identity(client.account_info())
     try:
         from trading.mt5_client import position_to_dict
         positions = client.get_positions()
@@ -203,6 +267,8 @@ def _live_positions(client) -> tuple[list, int | None]:
         return result, server_offset
     for p in positions:
         result.append(position_to_dict(client, p, server_offset))
+    if key is None or _account_identity(client.account_info()) != key:
+        return [], server_offset
     return result, server_offset
 
 
@@ -237,7 +303,7 @@ def api_status():
         else:
             mt5_error = mt5_error or "MT5 未连接（请先打开 TMGM 终端并登录）"
             status = dict(status)
-            status["positions"] = {}
+            status["positions"] = []
     elif server_offset is None:
         # 旧版 Runner 的状态里没有时区偏移 → 看板自己估一个
         client = _get_mt5_client()
@@ -254,12 +320,36 @@ def api_status():
                    "equity": round(float(ai.equity), 2),
                    "margin_free": round(float(ai.margin_free), 2)}
         mt5_error = None
+    runner_account = status.get("account") or {}
+    expected = [runner_account.get("server", ""), runner_account.get("login"), runner_account.get("currency", "")]
+    mismatch = expected != _account_key(ai)
+    if mismatch or not runner["alive"]:
+        status = dict(status)
+        status["positions"] = []
+        status["signals"] = {}
+        status["actions"] = []
+        if client is not None and ai is not None:
+            status["positions"], server_offset = _live_positions(client)
+    if not isinstance(status.get("positions"), list):
+        status = dict(status)
+        status["positions"] = []
+    if client is not None and ai is not None:
+        trade_allowed = client.trade_allowed()
+        if _account_identity(client.account_info()) != _account_identity(ai):
+            account = None
+            ai = None
+            status["positions"] = []
+            status["signals"] = {}
+            status["actions"] = []
     with _EQUITY_LOCK:
         _sync_equity_account(ai)
         if ai is not None:
             _push_equity_sample(ai.equity, ai.balance)
     return {
         "runner_alive": runner["alive"],
+        "runner_process_alive": runner.get("process_alive", runner["alive"]),
+        "runner_ready": runner["alive"],
+        "account_key": _account_key(ai),
         "runner_status": status,
         "account": account,
         "trade_allowed": trade_allowed,
@@ -364,19 +454,29 @@ def _push_equity_sample(equity: float, balance: float | None = None) -> None:
 
 
 @app.get("/api/equity/history")
-def api_equity_history():
+def api_equity_history(days: int = 90):
+    days = max(1, min(365, int(days or 90)))
     with _EQUITY_LOCK:
         client = _get_mt5_client()
         ai = client.account_info() if client is not None else None
         key = _sync_equity_account(ai)
         if key is None:
             return {"points": [], "history": [], "account_key": None, "error": "MT5 未连接或未登录"}
-        history = _balance_history_points(client=client, account=ai)
+        history = _balance_history_points(days=days, client=client, account=ai)
         if _account_identity(client.account_info()) != key:
             _sync_equity_account(None)
             raise HTTPException(409, "账户已切换，请重新读取历史曲线")
         _push_equity_sample(ai.equity, ai.balance)
-        return {"points": list(_EQUITY_SAMPLES), "history": history, "account_key": list(key)}
+        cutoff = time.time() - days * 86400
+        samples = [p for p in _EQUITY_SAMPLES if p[0] >= cutoff]
+        if key != _account_identity(client.account_info()):
+            _sync_equity_account(None)
+            raise HTTPException(409, "账户已切换，请重新读取历史曲线")
+        coverage = {"start": samples[0][0] if samples else None,
+                    "end": samples[-1][0] if samples else None,
+                    "count": len(samples), "requested_start": cutoff}
+        return {"points": samples, "history": history, "account_key": list(key), "days": days,
+                "sample_coverage": coverage, "now": time.time()}
 
 
 def _balance_history_points(days: int = 90, max_points: int = 400, *, client=None, account=None) -> list:
@@ -393,14 +493,16 @@ def _balance_history_points(days: int = 90, max_points: int = 400, *, client=Non
         if cache_key == cached_key and now - cached_ts < _BALANCE_HISTORY_TTL:
             return cached
         import MetaTrader5 as mt5
-        deals = mt5.history_deals_get(datetime.now() - timedelta(days=days), datetime.now() + timedelta(days=1))
+        offset = client.server_time_offset() or 0
+        start = now - days * 86400
+        deals = mt5.history_deals_get(datetime.utcfromtimestamp(start + offset),
+                                      datetime.utcfromtimestamp(now + offset))
         if deals is None:
             raise HTTPException(503, "MT5 历史成交读取失败，请稍后刷新")
-        offset = client.server_time_offset() or 0
         deltas = sorted((float(d.time) - offset,
                          float(d.profit) + float(d.commission) + float(d.swap) + float(getattr(d, "fee", 0))) for d in deals)
         balance = float(ai.balance) - sum(delta for _, delta in deltas)
-        points = []
+        points = [[start, round(balance, 2)]]
         if deltas:
             points.append([deltas[0][0] - 1, round(balance, 2)])
             stride = max(1, len(deltas) // max_points)
@@ -409,7 +511,8 @@ def _balance_history_points(days: int = 90, max_points: int = 400, *, client=Non
                 if i % stride == 0 or i == len(deltas) - 1:
                     points.append([ts, round(balance, 2)])
         else:
-            points = [[now - 1, round(balance, 2)], [now, round(balance, 2)]]
+            points = [[start, round(balance, 2)]]
+        points.append([now, round(float(ai.balance), 2)])
         if _account_identity(client.account_info()) != key:
             _sync_equity_account(None)
             raise HTTPException(409, "读取期间账户已切换，请刷新")
@@ -419,63 +522,166 @@ def _balance_history_points(days: int = 90, max_points: int = 400, *, client=Non
 
 # ── 配置读写 ────────────────────────────────────────────────────────
 
+def _strict_bool(payload: dict, key: str, *, required=False) -> bool | None:
+    if key not in payload:
+        if required:
+            raise HTTPException(400, f"{key} must be a boolean")
+        return None
+    if type(payload[key]) is not bool:
+        raise HTTPException(400, f"{key} must be a boolean")
+    return payload[key]
+
+
+def _strict_float(payload: dict, key: str, *, required=True, positive=False, allow_zero=False):
+    if key not in payload or payload[key] is None or type(payload[key]) not in (int, float):
+        if required:
+            raise HTTPException(400, f"{key} must be a finite number")
+        return None
+    try:
+        value = float(payload[key])
+    except (OverflowError, ValueError):
+        raise HTTPException(400, f"{key} must be finite")
+    if not math.isfinite(value) or (positive and (value <= 0 if not allow_zero else value < 0)):
+        raise HTTPException(400, f"{key} must be a valid number")
+    return value
+
+
+def _account_key(ai) -> list | None:
+    key = _account_identity(ai)
+    return list(key) if key is not None else None
+
+
+def _require_account_key(payload: dict, client) -> list[str]:
+    if not isinstance(payload.get("account_key"), list) or len(payload["account_key"]) != 3 or not isinstance(payload["account_key"][0], str) or type(payload["account_key"][1]) is not int or not isinstance(payload["account_key"][2], str):
+        raise HTTPException(400, "account_key must come from a fresh account confirmation")
+    current = _account_key(client.account_info() if client else None)
+    if current is None or payload["account_key"] != current:
+        raise HTTPException(409, "MT5 账户已切换，请重新确认当前账户")
+    return current
+
+
+def _request_contract(fn):
+    from functools import wraps
+    @wraps(fn)
+    def guarded(payload: dict):
+        for key in ("confirmed", "check_only", "dry_run", "clear_tp"):
+            _strict_bool(payload, key)
+        check_only = payload.get("check_only") is True
+        if "check_only" in payload and fn.__name__ != "api_mt5_pending_order":
+            raise HTTPException(400, "check_only is only valid for pending order preview")
+        if fn.__name__ != "api_mt5_order_check" and not check_only and payload.get("confirmed") is not True:
+            raise HTTPException(400, "操作需要 confirmed=true 二次确认")
+        if "ticket" in payload or fn.__name__ not in ("api_mt5_order", "api_mt5_order_check", "api_mt5_pending_order"):
+            ticket = payload.get("ticket")
+            if type(ticket) is not int or ticket <= 0:
+                raise HTTPException(400, "ticket must be a positive integer")
+        for key in ("lot", "price", "volume", "sl", "tp"):
+            required = (key == "lot" and fn.__name__ in ("api_mt5_order", "api_mt5_order_check", "api_mt5_pending_order") and payload.get("direction") != "CLOSE_ALL") or (key == "price" and fn.__name__ in ("api_mt5_pending_order", "api_mt5_pending_modify", "api_position_partial")) or (key == "sl" and fn.__name__ == "api_position_sl") or (key == "tp" and fn.__name__ == "api_position_tp")
+            if key in payload or required:
+                if payload.get(key) is None and key in ("sl", "tp") and not required:
+                    continue
+                _strict_float(payload, key, positive=True, allow_zero=key in ("sl", "tp", "volume") or fn.__name__ == "api_position_partial")
+        if fn.__name__ == "api_position_partial" and payload.get("price", 0) > 0:
+            _strict_float(payload, "volume", positive=True)
+        if fn.__name__ == "api_position_sl" and payload.get("sl", 0) <= 0:
+            raise HTTPException(400, "sl must be positive")
+        for key in ("symbol",):
+            if fn.__name__ in ("api_mt5_order", "api_mt5_order_check", "api_mt5_pending_order") and (not isinstance(payload.get(key), str) or not payload[key].strip()):
+                raise HTTPException(400, "symbol is required")
+        direction_key = "side" if fn.__name__ == "api_mt5_pending_order" else "direction"
+        if fn.__name__ in ("api_mt5_order", "api_mt5_order_check", "api_mt5_pending_order"):
+            allowed = ("BUY", "SELL", "CLOSE_ALL") if fn.__name__ == "api_mt5_order" else ("BUY", "SELL")
+            if payload.get(direction_key) not in allowed:
+                raise HTTPException(400, "invalid direction")
+        client = _get_mt5_client()
+        if client is None:
+            raise HTTPException(503, "MT5 未连接")
+        _require_account_key(payload, client)
+        return fn(payload)
+    return guarded
+
+
+def _config_transaction(fn):
+    from functools import wraps
+    @wraps(fn)
+    def guarded(payload: dict):
+        with CONFIG_LOCK:
+            return fn(payload)
+    return guarded
+
+
 @app.get("/api/config")
 def api_config():
     return load_trader_config()
 
 
 @app.put("/api/config")
+@_config_transaction
 def api_update_config(payload: dict):
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "payload must be an object")
+    allowed = {"dry_run", "confirmed", "account_key", "risk", "min_trade_exposure", "max_lot_per_trade",
+               "max_open_positions", "magic_number", "deviation_points", "signal_bars", "kline_cache_dir"}
+    if set(payload) - allowed:
+        raise HTTPException(400, "未知配置字段")
     cfg = load_trader_config()
-    # 切到真实下单必须明确确认；回到 dry-run 随时允许
-    if "dry_run" in payload and bool(payload["dry_run"]) is False \
-            and bool(cfg.get("dry_run", True)) is True:
-        if not payload.get("confirmed"):
+    if "dry_run" in payload and type(payload["dry_run"]) is not bool:
+        raise HTTPException(400, "dry_run must be a boolean")
+    if "confirmed" in payload and type(payload["confirmed"]) is not bool:
+        raise HTTPException(400, "confirmed must be a boolean")
+    if payload.get("dry_run") is False and cfg.get("dry_run", True) is True and payload.get("confirmed") is not True:
+        raise HTTPException(400, "切换真实下单需要网页二次确认")
+    if payload.get("dry_run") is False:
+        if payload.get("confirmed") is not True:
             raise HTTPException(400, "切换真实下单需要网页二次确认")
+        _require_account_key(payload, _get_mt5_client())
+    candidate = json.loads(json.dumps(cfg))
     if "dry_run" in payload:
-        cfg["dry_run"] = bool(payload["dry_run"])
+        candidate["dry_run"] = payload["dry_run"]
     risk = payload.get("risk")
-    if isinstance(risk, dict):
-        cfg.setdefault("risk", {}).update(risk)
+    if "risk" in payload:
+        if not isinstance(risk, dict):
+            raise HTTPException(400, "risk must be an object")
+        candidate.setdefault("risk", {}).update(risk)
     for key in ("min_trade_exposure", "max_lot_per_trade", "max_open_positions",
                 "magic_number", "deviation_points", "signal_bars", "kline_cache_dir"):
         if key in payload:
-            cfg[key] = payload[key]
-    save_trader_config(cfg)
-    return {"ok": True, "config": cfg}
+            candidate[key] = payload[key]
+    try:
+        validate_trader_config(candidate)
+        save_trader_config(candidate)
+    except (TypeError, ValueError, OSError) as exc:
+        raise HTTPException(400, f"配置无效: {exc}") from exc
+    return {"ok": True, "config": candidate}
 
 
 # ── Runner 启停 ─────────────────────────────────────────────────────
 
 @app.post("/api/runner/start")
 def api_runner_start():
-    alive = _runner_alive()["alive"]
-    if alive:
-        return {"ok": True, "message": "runner 已在运行"}
+    global _runner_process
+    if os.environ.get("MT5AUTOTRADER_OFFLINE") == "1":
+        raise HTTPException(409, "离线看板模式不允许启动交易 Runner")
+    if not _runner_start_lock.acquire(blocking=False):
+        raise HTTPException(409, "runner 正在启动")
     try:
-        STOP_FILE.unlink()
-    except OSError:
-        pass
-    LOGS_DIR.mkdir(exist_ok=True)
-    log_fh = open(RUNNER_LOG, "a", encoding="utf-8")
-    # 嵌入式 Python（runtime\python.exe 带 python311._pth）处于隔离模式：
-    # 不会把 cwd 加进 sys.path，"python -m trading.runner" 会报 No module named
-    # 'trading'。这里显式把 src 注入 sys.path 后再以 __main__ 运行。
-    boot = (
-        "import sys, runpy;"
-        f"sys.path.insert(0, r'{SRC}');"
-        "runpy.run_module('trading.runner', run_name='__main__')"
-    )
-    proc = subprocess.Popen(
-        [_venv_python(), "-c", boot],
-        cwd=str(SRC),
-        stdout=log_fh,
-        stderr=subprocess.STDOUT,
-        creationflags=CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP,
-    )
-    RUNNER_PID_FILE.write_text(str(proc.pid), encoding="utf-8")
-    logger.info(f"[看板] runner 已启动 pid={proc.pid}")
-    return {"ok": True, "pid": proc.pid}
+        runner = _runner_alive()
+        if runner.get("process_alive", runner["alive"]):
+            return {"ok": True, "message": "runner 进程已存在（可能正在等待连接）", "process_alive": True}
+        STOP_FILE.unlink(missing_ok=True)
+        LOGS_DIR.mkdir(exist_ok=True)
+        boot = ("import sys, runpy;" f"sys.path.insert(0, {str(SRC)!r});"
+                "runpy.run_module('trading.runner', run_name='__main__')")
+        with open(RUNNER_LOG, "a", encoding="utf-8") as log_fh:
+            proc = subprocess.Popen([_venv_python(), "-c", boot], cwd=str(SRC),
+                                    stdout=log_fh, stderr=subprocess.STDOUT,
+                                    creationflags=CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP)
+        _runner_process = proc
+        RUNNER_PID_FILE.write_text(str(proc.pid), encoding="utf-8")
+        logger.info(f"[看板] runner 已启动 pid={proc.pid}")
+        return {"ok": True, "pid": proc.pid, "process_alive": True, "ready": False}
+    finally:
+        _runner_start_lock.release()
 
 
 @app.post("/api/runner/stop")
@@ -499,8 +705,8 @@ def api_runner_stop():
                     break
         except (json.JSONDecodeError, OSError):
             pass
-    if pid and _pid_alive(pid):
-        # Windows 下不要用 os.kill(pid, 0)；这里使用 PowerShell Stop-Process 兜底。
+    if pid and _runner_process is not None and _runner_process.pid == pid and _launcher_pid_verified(pid):
+        # Only terminate the verified launcher; never an unrelated reused PID.
         subprocess.run(
             ["powershell.exe", "-NoProfile", "-Command", "Stop-Process", "-Id", str(pid), "-Force"],
             capture_output=True,
@@ -547,10 +753,12 @@ def api_strategies():
 
 def _resolve_strategy_path(name: str) -> Path:
     """把前端传来的策略名解析成 strategies/ 下的真实文件；越界或非 json 直接拒绝。"""
-    name = str(name or "").strip().replace("\\", "/")
-    if not name:
+    if not isinstance(name, str) or not name.strip():
         raise HTTPException(400, "缺少策略名")
-    # 允许传 "best_X"、"best_X.json"、"strategies/best_X.json" 三种写法
+    name = name.strip().replace("\\", "/")
+    parts = Path(name).parts
+    if Path(name).is_absolute() or any(p in (".", "..") for p in parts) or len(parts) > 2 or (len(parts) == 2 and parts[0] != "strategies"):
+        raise HTTPException(400, "非法策略路径")
     name = Path(name).name
     if not name.lower().endswith(".json"):
         name += ".json"
@@ -561,6 +769,7 @@ def _resolve_strategy_path(name: str) -> Path:
 
 
 @app.post("/api/strategies/delete")
+@_config_transaction
 def api_strategy_delete(payload: dict):
     target = _resolve_strategy_path(payload.get("name", ""))
     if not target.exists():
@@ -578,27 +787,36 @@ def api_strategy_delete(payload: dict):
 
 
 @app.post("/api/strategies/bind")
+@_config_transaction
 def api_strategy_bind(payload: dict):
-    strategy_file = str(payload.get("strategy_file", "")).strip()
-    symbol = str(payload.get("symbol", "")).strip()
-    lot = float(payload.get("lot", 0.01) or 0.01)
-    if not strategy_file or not symbol:
-        raise HTTPException(400, "需要 strategy_file 和 symbol")
-    if not (ROOT / strategy_file).exists():
-        raise HTTPException(400, f"策略文件不存在: {strategy_file}")
-    if lot <= 0:
-        raise HTTPException(400, "手数必须大于 0")
+    strategy_file = payload.get("strategy_file")
+    symbol = payload.get("symbol")
+    lot = _strict_float(payload, "lot", positive=True)
+    if not isinstance(symbol, str) or not symbol.strip():
+        raise HTTPException(400, "symbol is required")
+    path = _resolve_strategy_path(strategy_file)
+    if not path.is_file():
+        raise HTTPException(400, "策略文件不存在")
+    strategy_file = path.relative_to(ROOT).as_posix()
+    symbol = symbol.strip()
     cfg = load_trader_config()
     bindings = [b for b in cfg.get("bindings", []) if b.get("symbol") != symbol]
     bindings.append({"strategy_file": strategy_file, "symbol": symbol, "lot": lot})
     cfg["bindings"] = bindings
-    save_trader_config(cfg)
+    try:
+        save_trader_config(cfg)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     return {"ok": True, "bindings": bindings}
 
 
 @app.post("/api/strategies/unbind")
+@_config_transaction
 def api_strategy_unbind(payload: dict):
-    symbol = str(payload.get("symbol", "")).strip()
+    symbol = payload.get("symbol")
+    if not isinstance(symbol, str) or not symbol.strip():
+        raise HTTPException(400, "symbol is required")
+    symbol = symbol.strip()
     cfg = load_trader_config()
     cfg["bindings"] = [b for b in cfg.get("bindings", []) if b.get("symbol") != symbol]
     save_trader_config(cfg)
@@ -627,6 +845,7 @@ def api_mt5_symbols():
 
 
 @app.post("/api/mt5/position/partial")
+@_request_contract
 def api_position_partial(payload: dict):
     """设置/取消"止盈一半"计划（到价分批平仓）。
 
@@ -639,22 +858,15 @@ def api_position_partial(payload: dict):
     volume = float(payload.get("volume", 0) or 0)
     if ticket <= 0:
         raise HTTPException(400, "ticket 无效")
-    # 仓位信息优先取 Runner 状态（dry-run 台账和 MT5 实仓都在里面）
-    info = None
-    try:
-        st = json.loads(STATUS_FILE.read_text(encoding="utf-8"))
-        info = next((q for q in (st.get("positions") or [])
-                     if int(q.get("ticket", 0)) == ticket), None)
-    except (json.JSONDecodeError, OSError):
-        info = None
-    if info is None:
-        client = _get_mt5_client()
-        p = _find_any_position(client, ticket) if client else None
-        if p is None:
-            raise HTTPException(404, f"找不到持仓 ticket={ticket}")
+    client = _get_mt5_client()
+    p = _find_any_position(client, ticket) if client else None
+    info = _find_status_position(ticket) if p is None else None
+    if p is not None:
         lot = float(p.volume)
-    else:
+    elif info is not None:
         lot = float(info.get("volume", 0) or 0)
+    else:
+        raise HTTPException(404, f"找不到持仓 ticket={ticket}")
     if price <= 0:
         override = {"price": 0.0, "close_volume": 0.0, "ts": time.time()}
         message = "已取消该仓位的止盈一半计划"
@@ -664,17 +876,36 @@ def api_position_partial(payload: dict):
                 400, f"平仓手数必须在 0 与 {lot} 之间（全部平仓请用「平仓」按钮）")
         override = {"price": price, "close_volume": volume, "ts": time.time()}
         message = f"止盈一半已设置：到 {price} 平 {volume}手"
+    override["account_key"] = list(payload["account_key"])
     path = LOGS_DIR / "sr_partial_overrides.json"
+    _require_account_key(payload, client)
+    p = _find_any_position(client, ticket) if client else None
+    if p is not None and price > 0 and not (0 < volume < float(p.volume)):
+        raise HTTPException(409, "持仓手数已变化，请重新确认分批手数")
+    old_tp = float(getattr(p, "tp", 0) or 0) if p else 0
+    cleared = False
+    if payload.get("clear_tp") is True and p is not None and old_tp > 0:
+        _require_account_key(payload, client)
+        client.dry_run = False
+        cleared = client.modify_sl(str(p.symbol), ticket, new_sl=float(getattr(p, "sl", 0) or 0), tp=0)
+        if not cleared:
+            return {"ok": False, "message": "清除原止盈失败，未写入分批止盈计划"}
     try:
-        data = {}
-        if path.exists():
-            data = json.loads(path.read_text(encoding="utf-8"))
-        data[str(ticket)] = override
-        path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-    except (OSError, json.JSONDecodeError) as exc:
-        raise HTTPException(500, f"写入失败: {exc}")
+        _require_account_key(payload, client)
+        _atomic_override(path, ticket, override)
+    except (OSError, ValueError, HTTPException) as exc:
+        restored = False
+        if cleared:
+            try:
+                _require_account_key(payload, client)
+                restored = client.modify_sl(str(p.symbol), ticket, new_sl=float(getattr(p, "sl", 0) or 0), tp=old_tp)
+            except Exception:
+                pass
+        raise HTTPException(500, f"计划写入失败；原 TP {'已恢复' if restored else '请核实'}: {exc}") from exc
+    pending = not _runner_alive()["alive"]
     logger.info(f"[持仓管理] ticket={ticket} 止盈一半覆盖: {override}")
-    return {"ok": True, "message": message}
+    return {"ok": True, "pending": pending,
+            "message": message + ("（Runner 未就绪，计划待处理，不会立即执行）" if pending else "")}
 
 
 # ── 支撑/阻力位（S/R）────────────────────────────────────────────────
@@ -714,6 +945,9 @@ def api_sr_chart(symbol: str, timeframe: str = "H1", bars: int = 300):
     symbol = symbol.strip()
     if not symbol:
         raise HTTPException(400, "缺少品种")
+    key = _account_identity(client.account_info())
+    if key is None:
+        raise HTTPException(503, "MT5 未登录")
     from trading.sr import detect_levels
     tf = Config.get_timeframe(timeframe)
     want = max(120, min(int(bars or 300), 2000))
@@ -728,11 +962,17 @@ def api_sr_chart(symbol: str, timeframe: str = "H1", bars: int = 300):
                 round(float(r["low"]), 8), round(float(r["close"]), 8)]
 
     last = int(want)
+    candles = [row(r) for r in closed[-last:]]
+    forming = row(rates[-1]) if len(rates) else None
+    offset = client.server_time_offset()
+    if key != _account_identity(client.account_info()):
+        raise HTTPException(409, "账户已切换，请刷新图表")
     return {
+        "account_key": list(key),
         "symbol": symbol,
         "timeframe": timeframe,
-        "candles": [row(r) for r in closed[-last:]],
-        "forming": row(rates[-1]) if len(rates) else None,
+        "candles": candles,
+        "forming": forming,
         "zones": levels,
         "info": info,
         "server_offset_sec": client.server_time_offset(),
@@ -743,6 +983,7 @@ def api_sr_chart(symbol: str, timeframe: str = "H1", bars: int = 300):
 # ── 手动交易（二次确认）─────────────────────────────────────────────
 
 @app.post("/api/mt5/order_check")
+@_request_contract
 def api_mt5_order_check(payload: dict):
     """只做 MT5 order_check，不发送订单。"""
     client = _get_mt5_client()
@@ -758,6 +999,7 @@ def api_mt5_order_check(payload: dict):
 
 
 @app.post("/api/mt5/order")
+@_request_contract
 def api_mt5_order(payload: dict):
     if not payload.get("confirmed"):
         raise HTTPException(400, "手动下单需要二次确认")
@@ -774,6 +1016,7 @@ def api_mt5_order(payload: dict):
     if direction not in ("BUY", "SELL", "CLOSE_ALL"):
         raise HTTPException(400, "direction 必须是 BUY/SELL/CLOSE_ALL")
     # 手动订单明确由用户确认后执行，不受 Runner 的 dry-run 配置影响。
+    _require_account_key(payload, client)
     client.dry_run = False
     if direction == "CLOSE_ALL":
         ok = client.close_symbol_all(symbol)
@@ -795,11 +1038,16 @@ def api_mt5_pending_list(symbol: str | None = None):
     if client is None:
         return {"orders": [], "error": "MT5 未连接"}
     from trading.mt5_client import pending_to_dict
+    key = _account_identity(client.account_info())
     orders = client.get_orders((symbol or "").strip() or None)
-    return {"orders": [pending_to_dict(o) for o in orders]}
+    rows = [pending_to_dict(o) for o in orders]
+    if key is None or key != _account_identity(client.account_info()):
+        raise HTTPException(409, "账户已切换，请重新读取挂单")
+    return {"orders": rows, "account_key": list(key)}
 
 
 @app.post("/api/mt5/pending/order")
+@_request_contract
 def api_mt5_pending_order(payload: dict):
     """下挂单。check_only=true 时只做 order_check（只读，绝不发单）。"""
     check_only = bool(payload.get("check_only"))
@@ -824,6 +1072,7 @@ def api_mt5_pending_order(payload: dict):
         raise HTTPException(400, "触发价格无效")
     if lot <= 0:
         raise HTTPException(400, "手数无效")
+    _require_account_key(payload, client)
     if not check_only:
         client.dry_run = False  # 用户明确确认后的真实挂单
     result = client.pending_order(symbol, side, price, lot,
@@ -844,6 +1093,7 @@ def api_mt5_pending_order(payload: dict):
 
 
 @app.post("/api/mt5/pending/modify")
+@_request_contract
 def api_mt5_pending_modify(payload: dict):
     """修改挂单触发价（止损止盈随平移，未给的保持原值）。网页二次确认。"""
     if not payload.get("confirmed"):
@@ -857,6 +1107,7 @@ def api_mt5_pending_modify(payload: dict):
     tp = float(payload.get("tp", 0) or 0)
     if ticket <= 0 or price <= 0:
         raise HTTPException(400, "ticket 或触发价无效")
+    _require_account_key(payload, client)
     client.dry_run = False  # 用户明确确认后的真实动作
     result = client.modify_order(ticket, price, sl=sl or None, tp=tp or None)
     if result["ok"]:
@@ -868,6 +1119,7 @@ def api_mt5_pending_modify(payload: dict):
 
 
 @app.post("/api/mt5/pending/cancel")
+@_request_contract
 def api_mt5_pending_cancel(payload: dict):
     if not payload.get("confirmed"):
         raise HTTPException(400, "撤销挂单需要二次确认")
@@ -877,6 +1129,7 @@ def api_mt5_pending_cancel(payload: dict):
     ticket = int(payload.get("ticket", 0) or 0)
     if ticket <= 0:
         raise HTTPException(400, "ticket 无效")
+    _require_account_key(payload, client)
     client.dry_run = False  # 用户明确确认后的真实动作
     result = client.cancel_order(ticket)
     if result["ok"]:
@@ -898,6 +1151,7 @@ def _find_any_position(client, ticket: int):
 
 
 @app.post("/api/mt5/position/close")
+@_request_contract
 def api_position_close(payload: dict):
     if not payload.get("confirmed"):
         raise HTTPException(400, "平仓需要二次确认")
@@ -908,6 +1162,7 @@ def api_position_close(payload: dict):
     p = _find_any_position(client, ticket)
     if p is None:
         raise HTTPException(404, f"找不到持仓 ticket={ticket}（可能已平仓）")
+    _require_account_key(payload, client)
     client.dry_run = False  # 网页明确确认后的真实动作
     ok = client.close_position(str(p.symbol), ticket)
     if ok:
@@ -916,31 +1171,45 @@ def api_position_close(payload: dict):
     return {"ok": False, "message": "平仓失败，请查看日志或重试"}
 
 
-def _write_sl_override(ticket: int, sl: float, applied_to_mt5: bool) -> None:
-    """把手动止损写入覆盖文件，Runner 下圈应用并豁免自动拉回。"""
+def _atomic_override(path: Path, ticket: int, override: dict) -> None:
+    from config import _atomic_json_write
+    with CONFIG_LOCK:
+        expected = override.get("account_key")
+        _require_account_key({"account_key": expected}, _get_mt5_client())
+        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        if not isinstance(data, dict):
+            raise ValueError("override file must be an object")
+        data[str(ticket)] = override
+        _atomic_json_write(path, data)
+
+
+def _write_sl_override(ticket: int, sl: float, applied_to_mt5: bool, account_key: list) -> None:
     path = LOGS_DIR / "sl_overrides.json"
     try:
-        data = {}
-        if path.exists():
-            data = json.loads(path.read_text(encoding="utf-8"))
-        data[str(int(ticket))] = {"sl": sl, "ts": time.time(),
-                                  "applied_to_mt5": bool(applied_to_mt5)}
-        path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-    except (OSError, json.JSONDecodeError) as exc:
-        logger.warning(f"[持仓管理] 写入手动止损覆盖失败: {exc}")
+        _atomic_override(path, ticket, {"sl": sl, "ts": time.time(),
+                                      "applied_to_mt5": bool(applied_to_mt5), "account_key": list(account_key)})
+    except (OSError, ValueError) as exc:
+        raise HTTPException(500, f"止损覆盖写入失败（请核实终端止损）: {exc}") from exc
 
 
 def _find_status_position(ticket: int) -> dict | None:
     """从 Runner 状态里找持仓（dry-run 台账和 MT5 实仓都在里面）。"""
     try:
+        client = _get_mt5_client()
+        key = _account_identity(client.account_info() if client else None)
         st = json.loads(STATUS_FILE.read_text(encoding="utf-8"))
+        account = st.get("account") or {}
+        status_key = (str(account.get("server", "")), account.get("login"), str(account.get("currency", "")))
+        if key is None or key != status_key or not _runner_alive().get("process_alive"):
+            return None
         return next((q for q in (st.get("positions") or [])
-                     if int(q.get("ticket", 0)) == int(ticket)), None)
+                     if q.get("dry_run") is True and int(q.get("ticket", 0)) == int(ticket)), None)
     except (json.JSONDecodeError, OSError, ValueError):
         return None
 
 
 @app.post("/api/mt5/position/sl")
+@_request_contract
 def api_position_sl(payload: dict):
     ticket = int(payload.get("ticket", 0) or 0)
     sl = float(payload.get("sl", 0) or 0)
@@ -950,11 +1219,12 @@ def api_position_sl(payload: dict):
     mt5_pos = _find_any_position(client, ticket) if client else None
     if mt5_pos is not None:
         # 真实 MT5 持仓：直接修改，并写覆盖文件让 Runner 豁免自动拉回
+        _require_account_key(payload, client)
         client.dry_run = False
         ok = client.modify_sl(str(mt5_pos.symbol), ticket, new_sl=sl,
                               tp=float(getattr(mt5_pos, "tp", 0) or 0))
         if ok:
-            _write_sl_override(ticket, sl, applied_to_mt5=True)
+            _write_sl_override(ticket, sl, applied_to_mt5=True, account_key=payload["account_key"])
             logger.info(f"[持仓管理] ticket={ticket} {mt5_pos.symbol} 止损手动改为 {sl}")
             return {"ok": True, "message": f"止损已改为 {sl}（手动管理，不再自动拉回）"}
         return {"ok": False, "message": "修改失败（可能离市价太近或市场关闭）"}
@@ -962,12 +1232,13 @@ def api_position_sl(payload: dict):
     info = _find_status_position(ticket)
     if info is None:
         raise HTTPException(404, f"找不到持仓 ticket={ticket}")
-    _write_sl_override(ticket, sl, applied_to_mt5=False)
+    _write_sl_override(ticket, sl, applied_to_mt5=False, account_key=payload["account_key"])
     logger.info(f"[持仓管理] ticket={ticket} {info.get('symbol')} 止损手动改为 {sl}（模拟仓）")
     return {"ok": True, "message": f"止损已改为 {sl}（模拟仓，Runner 下圈生效）"}
 
 
 @app.post("/api/mt5/position/tp")
+@_request_contract
 def api_position_tp(payload: dict):
     client = _get_mt5_client()
     if client is None:
@@ -977,6 +1248,7 @@ def api_position_tp(payload: dict):
     p = _find_any_position(client, ticket)
     if p is None:
         raise HTTPException(404, f"找不到持仓 ticket={ticket}")
+    _require_account_key(payload, client)
     client.dry_run = False
     ok = client.modify_sl(str(p.symbol), ticket, new_sl=float(getattr(p, "sl", 0) or 0), tp=tp)
     if ok:
@@ -1000,15 +1272,24 @@ def api_mt5_history(days: int = 30, scope: str = "mine"):
     from trading.history import group_history_deals
     days = max(1, min(365, int(days or 30)))
     scope = "all" if str(scope or "").lower() == "all" else "mine"
-    to = datetime.now() + timedelta(days=1)
-    frm = datetime.now() - timedelta(days=days)
+    before = _account_identity(client.account_info())
+    if before is None:
+        raise HTTPException(503, "MT5 未登录")
+    server_offset = client.server_time_offset() or 0
+    now = time.time()
+    to = datetime.utcfromtimestamp(now + server_offset)
+    frm = datetime.utcfromtimestamp(now - days * 86400 + server_offset)
     try:
-        deals = mt5.history_deals_get(frm, to) or []
+        deals = mt5.history_deals_get(frm, to)
+        if deals is None:
+            raise HTTPException(503, "MT5 历史读取失败")
     except Exception as exc:
         raise HTTPException(500, f"读取历史失败: {exc}")
     grouped = group_history_deals(deals, magic=None if scope == "all" else client.magic)
-    server_offset = client.server_time_offset()
+    if before != _account_identity(client.account_info()):
+        raise HTTPException(409, "账户已切换，请重新读取历史")
     return {
+        "account_key": list(before),
         "server_offset_sec": server_offset,
         "total_deals": len(deals),
         "closed": grouped["closed"],
@@ -1049,6 +1330,15 @@ def api_data_files():
 
 # ── 训练 ────────────────────────────────────────────────────────────
 
+def _job_transaction(fn):
+    from functools import wraps
+    @wraps(fn)
+    def guarded(*args, **kwargs):
+        with _job_lock:
+            return fn(*args, **kwargs)
+    return guarded
+
+
 class JobManager:
     """同一时刻只允许一个训练/回测子进程。"""
 
@@ -1059,27 +1349,32 @@ class JobManager:
         self.started_at: str | None = None
         self.args: dict = {}
 
+    @_job_transaction
     def running(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
 
     def start(self, cmd: list[str], log_file: Path, args: dict) -> dict:
-        if self.running():
-            raise HTTPException(400, f"{self.kind} 已在运行中")
-        log_file.parent.mkdir(exist_ok=True)
-        fh = open(log_file, "w", encoding="utf-8")
-        env = dict(os.environ)
-        env.setdefault("MPLBACKEND", "Agg")
-        env["PYTHONUNBUFFERED"] = "1"
-        self.proc = subprocess.Popen(
-            cmd, cwd=str(ROOT), stdout=fh, stderr=subprocess.STDOUT,
-            creationflags=CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP, env=env,
-        )
-        self.log_file = log_file
-        self.started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self.args = args
-        logger.info(f"[{self.kind}] 启动 pid={self.proc.pid} args={args}")
-        return {"ok": True, "pid": self.proc.pid}
+        with _job_lock:
+            if self.running() or training_job.running() or backtest_job.running():
+                raise HTTPException(409, "已有训练/回测任务运行中")
+            log_file.parent.mkdir(exist_ok=True)
+            env = dict(os.environ)
+            env.setdefault("MPLBACKEND", "Agg")
+            env["PYTHONUNBUFFERED"] = "1"
+            if self.kind == "训练":
+                (ROOT / "TRAIN_STOP").unlink(missing_ok=True)
+            with open(log_file, "w", encoding="utf-8") as fh:
+                self.proc = subprocess.Popen(
+                    cmd, cwd=str(ROOT), stdout=fh, stderr=subprocess.STDOUT,
+                    creationflags=CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP, env=env,
+                )
+            self.log_file = log_file
+            self.started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            self.args = args
+            logger.info(f"[{self.kind}] 启动 pid={self.proc.pid} args={args}")
+            return {"ok": True, "pid": self.proc.pid}
 
+    @_job_transaction
     def stop(self) -> dict:
         if not self.running():
             return {"ok": True, "message": "没有在运行的任务"}
@@ -1091,6 +1386,7 @@ class JobManager:
         logger.info(f"[{self.kind}] 已停止")
         return {"ok": True, "message": "已停止"}
 
+    @_job_transaction
     def status(self) -> dict:
         running = self.running()
         tail = _tail_file(self.log_file, 40) if self.log_file else ""
@@ -1132,14 +1428,25 @@ backtest_job = JobManager("回测")
 
 @app.post("/api/training/start")
 def api_training_start(payload: dict):
-    (ROOT / "TRAIN_STOP").unlink(missing_ok=True)  # 清掉残留的停止信号
+    with _job_lock:
+        if training_job.running() or backtest_job.running():
+            raise HTTPException(409, "已有训练/回测任务运行中")
     direct_mt5 = bool(payload.get("direct_mt5"))
     from_scratch = bool(payload.get("from_scratch"))
     steps = int(payload.get("steps", 0) or 0)
     timeframe = str(payload.get("timeframe", "H1") or "H1").upper()
     islands = int(payload.get("islands", 0) or 0)
     resume_file = str(payload.get("resume_file", "") or "").strip()
+    if resume_file:
+        candidate = Path(resume_file).resolve()
+        if candidate.parent != (ROOT / "checkpoints").resolve() or candidate.suffix != ".pt" or not candidate.is_file():
+            raise HTTPException(400, "续训文件必须位于 checkpoints/*.pt")
+        resume_file = str(candidate)
+    if timeframe not in Config._TF_SECONDS:
+        raise HTTPException(400, "timeframe 无效")
     if direct_mt5:
+        if os.environ.get("MT5AUTOTRADER_OFFLINE") == "1":
+            raise HTTPException(409, "离线看板模式不允许从 MT5 获取训练数据")
         symbol = str(payload.get("symbol", "")).strip()
         bars = int(payload.get("bars", 6000) or 6000)
         if not symbol:
@@ -1174,6 +1481,8 @@ def api_training_start(payload: dict):
         if resume_file:
             cmd.extend(["--resume-file", resume_file])
         log_name = Path(data_file).stem
+    if not log_name or any(c in log_name for c in "/\\:") or log_name in (".", ".."):
+        raise HTTPException(400, "非法训练日志标签")
     log_file = LOGS_DIR / f"train_{log_name}_{int(time.time())}.log"
     result = training_job.start(cmd, log_file, {
         "data_file": data_file, "direct_mt5": direct_mt5,
@@ -1242,7 +1551,7 @@ def api_delete_checkpoint(payload: dict):
         raise HTTPException(400, "缺少检查点名")
     ck_dir = (ROOT / "checkpoints").resolve()
     target = (ck_dir / Path(name).name).resolve()
-    if not str(target).startswith(str(ck_dir)) or target.suffix != ".pt":
+    if Path(name).name != name or target.parent != ck_dir or target.suffix != ".pt":
         raise HTTPException(400, "非法检查点路径")
     if not target.exists():
         return {"ok": True, "message": "文件已不存在", "deleted": name}
@@ -1257,6 +1566,7 @@ def api_delete_checkpoint(payload: dict):
 
 
 @app.post("/api/training/stop")
+@_job_transaction
 def api_training_stop():
     """安全停止：写 TRAIN_STOP 信号 → 引擎存完检查点/策略后自己退出；
     超时未退才强杀兜底。这样「停止训练」不再丢进度。"""
@@ -1312,14 +1622,18 @@ def api_training_status():
     return st
 
 
+def _training_history_dir() -> Path:
+    return ROOT / "training_history"
+
+
 @app.get("/api/training/curve")
 def api_training_curve(symbol: str = ""):
-    """训练分数曲线：读取 training_history_{symbol}.json。
-
-    symbol 留空时优先取当前训练任务的数据文件品种，否则取最新的一份历史。
-    """
+    """Read only ROOT/training_history/training_history_tag.json."""
+    if symbol and (not isinstance(symbol, str) or any(c in symbol for c in "/\\:") or symbol in (".", "..")):
+        raise HTTPException(400, "非法历史标签")
+    history_dir = _training_history_dir()
     if symbol:
-        candidates = [ROOT / f"training_history_{symbol}.json"]
+        candidates = [history_dir / f"training_history_{symbol}.json"]
     else:
         arg_file = str(training_job.args.get("data_file") or "")
         candidates = []
@@ -1331,15 +1645,11 @@ def api_training_curve(symbol: str = ""):
             except (ValueError, OSError):
                 tag = Path(arg_file).stem
             island = int(training_job.args.get("islands", 0) or 0) > 1
-            # 新命名（品种_周期）→ 岛曲线 → 旧命名（仅品种 / 文件 stem）逐级回退
             if island:
-                candidates.append(ROOT / f"training_history_{tag}_island.json")
-            candidates.append(ROOT / f"training_history_{tag}.json")
-            candidates.append(ROOT / f"training_history_{Path(arg_file).stem}.json")
-        candidates.extend(sorted(
-            (p for p in ROOT.glob("training_history_*.json") if "__isl" not in p.name),
-            key=lambda p: p.stat().st_mtime, reverse=True,
-        ))
+                candidates.append(history_dir / f"training_history_{tag}_island.json")
+            candidates.append(history_dir / f"training_history_{tag}.json")
+        candidates.extend(sorted(history_dir.glob("training_history_*.json"),
+                                 key=lambda p: p.stat().st_mtime, reverse=True))
     for path in candidates:
         if not path.exists():
             continue
@@ -1423,8 +1733,8 @@ def api_quick_backtest(payload: dict):
 
 @app.post("/api/backtest/start")
 def api_backtest_start(payload: dict):
-    strategy_file = str(payload.get("strategy_file", "")).strip()
-    if not strategy_file or not (ROOT / strategy_file).exists():
+    strategy_file = str(_resolve_strategy_path(payload.get("strategy_file", "")).relative_to(ROOT))
+    if not (ROOT / strategy_file).is_file():
         raise HTTPException(400, "策略文件不存在")
     cmd = [_venv_python(), "-u", "src/run_backtest.py",
            "--strategy-file", strategy_file]
@@ -1490,7 +1800,7 @@ def api_backtest_report():
 @app.get("/api/backtest/chart/{name}")
 def api_backtest_chart(name: str):
     target = (BACKTEST_OUTPUT / name).resolve()
-    if not str(target).startswith(str(BACKTEST_OUTPUT.resolve())) or target.suffix != ".png":
+    if target.parent != BACKTEST_OUTPUT.resolve() or target.suffix != ".png":
         raise HTTPException(400, "非法文件名")
     if not target.exists():
         raise HTTPException(404, "图表不存在")

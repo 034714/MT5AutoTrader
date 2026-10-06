@@ -9,8 +9,6 @@ model_core/island_engine.py — 多起点并行训练（Island Model）
 CPU 训练下串行轮流训练每个 island 一个小阶段效率更高，且输出不混乱。
 """
 import copy
-import heapq
-import json
 import os
 import random
 from pathlib import Path
@@ -18,8 +16,9 @@ from pathlib import Path
 import torch
 
 from .config import ModelConfig
-from .engine import AlphaEngine
-from .backtest import SCORING_VERSION
+from .engine import AlphaEngine, _current_scoring_version
+from utils.training_artifacts import atomic_json_write, atomic_write, checkpoint_dir, checkpoint_step, history_path, json_safe, root_path
+from utils.training_context import rng_state, restore_rng
 
 
 class IslandAlphaEngine:
@@ -47,6 +46,7 @@ class IslandAlphaEngine:
         self.global_best_formula = None
         self.global_best_island = -1
         self._step = 0
+        self._phase_interrupted = False
         self.checkpoint_tag: str | None = None
         self.global_history = {"step": [], "best_score": []}
 
@@ -62,6 +62,7 @@ class IslandAlphaEngine:
         self.checkpoint_tag = tag
         for i, isl in enumerate(self.islands):
             isl.history_tag = f"{tag}__isl{i + 1}"
+            isl.context_symbol = symbol
             # 岛模式由管理器写复合检查点，单岛不写自己的检查点，避免互相覆盖
             isl.save_checkpoints = False
             if timeframe is not None:
@@ -72,16 +73,19 @@ class IslandAlphaEngine:
                 isl.mode = mode
 
     def save_checkpoint(self, step: int, path: str | None = None) -> str:
-        """在完整迁移阶段结束后保存所有岛的复合状态。"""
-        ckpt_dir = Path("checkpoints")
+        """Save a completed phase or an interrupted phase with per-island counts."""
+        ckpt_dir = checkpoint_dir()
         ckpt_dir.mkdir(parents=True, exist_ok=True)
         tag = self.checkpoint_tag or "unknown"
         if path is None:
             path = str(ckpt_dir / f"island_ckpt_{tag}_step_{step:04d}.pt")
         payload = {
             "kind": "island",
-            "scoring_version": SCORING_VERSION,
+            "scoring_version": _current_scoring_version(),
+            "training_context": self.islands[0].training_context(),
+            "rng_state": rng_state(),
             "step": step,
+            "phase_interrupted": self._phase_interrupted,
             "vocab_version": self.islands[0].checkpoint_state(step)["vocab_version"],
             "n_islands": self.n_islands,
             "migration_interval": self.migration_interval,
@@ -90,18 +94,17 @@ class IslandAlphaEngine:
             "global_best_formula": self.global_best_formula,
             "global_best_island": self.global_best_island,
             "global_history": self.global_history,
-            "islands": [isl.checkpoint_state(step) for isl in self.islands],
+            "islands": [isl.checkpoint_state(isl.completed_steps) for isl in self.islands],
             "torch_rng_state": torch.get_rng_state(),
             "python_rng_state": random.getstate(),
         }
-        tmp = path + ".tmp"
-        torch.save(payload, tmp)
-        os.replace(tmp, path)
+        path = str(root_path(path)) if not Path(path).is_absolute() else str(path)
+        atomic_write(path, lambda tmp: torch.save(payload, tmp))
         keep = max(1, int(getattr(ModelConfig, "KEEP_CHECKPOINTS", 3)))
         prefix = f"island_ckpt_{tag}_step_"
         files = sorted((ckpt_dir / p for p in os.listdir(ckpt_dir)
                         if p.startswith(prefix) and p.endswith(".pt")),
-                       key=lambda p: p.stat().st_mtime)
+                       key=checkpoint_step)
         for old in files[:-keep]:
             old.unlink(missing_ok=True)
         print(f"[岛检查点] → {path}（步数={step}，保留最近 {keep} 个）")
@@ -109,24 +112,32 @@ class IslandAlphaEngine:
 
     def load_checkpoint(self, path: str) -> int:
         """恢复复合岛检查点，要求岛数和迁移设置一致。"""
-        ckpt = torch.load(path, map_location=ModelConfig.DEVICE)
+        ckpt = torch.load(path, map_location=ModelConfig.DEVICE, weights_only=True)
         if ckpt.get("kind") != "island":
             raise ValueError(f"不是岛模式检查点: {path}")
         if int(ckpt.get("n_islands", 0)) != self.n_islands:
             raise ValueError("检查点岛数与本次训练不一致")
         if int(ckpt.get("migration_interval", 0)) != self.migration_interval:
             raise ValueError("检查点迁移间隔与本次训练不一致")
-        for isl, state in zip(self.islands, ckpt.get("islands", [])):
+        self.islands[0].validate_checkpoint_context(ckpt)
+        states = ckpt.get("islands", [])
+        if len(states) != self.n_islands:
+            raise ValueError("Checkpoint island state count mismatch")
+        if int(ckpt.get("migration_top_k", 0)) != self.migration_top_k:
+            raise ValueError("Checkpoint migration top-k mismatch")
+        hotstart = any(isl.validate_checkpoint_context(state) for isl, state in zip(self.islands, states))
+        # Validate all identities first: a later wrong island cannot partially load.
+        for isl, state in zip(self.islands, states):
+            isl.validate_checkpoint_context(state)
+        for isl, state in zip(self.islands, states):
             isl.restore_checkpoint_state(state)
         self.global_best_score = ckpt.get("global_best_score", -float("inf"))
         self.global_best_formula = ckpt.get("global_best_formula")
         self.global_best_island = int(ckpt.get("global_best_island", -1))
-        if ckpt.get("torch_rng_state") is not None:
-            torch.set_rng_state(ckpt["torch_rng_state"])
-        if ckpt.get("python_rng_state") is not None:
-            random.setstate(ckpt["python_rng_state"])
+        if not hotstart:
+            restore_rng(ckpt.get("rng_state"))
         self.global_history = ckpt.get("global_history", {"step": [], "best_score": []})
-        if ckpt.get("scoring_version") != SCORING_VERSION:
+        if hotstart or ckpt.get("scoring_version") != _current_scoring_version():
             self.global_best_score = -float('inf')
             self.global_best_formula = None
             self.global_best_island = -1
@@ -134,6 +145,7 @@ class IslandAlphaEngine:
             self._update_global_best()
         step = int(ckpt.get("step", 0))
         self._step = step
+        self._phase_interrupted = bool(ckpt.get("phase_interrupted", False))
         print(f"[岛检查点] 已恢复 {path}：步数={step}，全局最优={self.global_best_score:.4f}")
         return step
 
@@ -185,8 +197,14 @@ class IslandAlphaEngine:
         """主训练循环：每个 island 轮流训练一个阶段，然后迁移 elite。"""
         total_steps = ModelConfig.TRAIN_STEPS
         if start_step >= total_steps:
+            if self._phase_interrupted:
+                raise ValueError("Interrupted island phase requires a target above its phase-start step")
             print(f"[岛训练] 起始步 {start_step} 已达目标步 {total_steps}，无需继续训练。")
             return
+        if self._phase_interrupted and any(isl.completed_steps > total_steps for isl in self.islands):
+            raise ValueError("Requested target is below an interrupted island completed step")
+        for isl in self.islands:
+            isl.user_stopped = False
         # 检查点是在所有岛完成、迁移和同步后保存的，即使目标步数不是
         # migration_interval 的整数倍也可以安全续训；下一阶段从当前步继续。
         interval = max(1, int(self.migration_interval))
@@ -219,8 +237,9 @@ class IslandAlphaEngine:
 
             def _run_phase(isl: AlphaEngine) -> None:
                 # 每岛独立训练一个阶段（岛间互不共享可变状态，可安全并行）
-                isl.train(start_step=start, end_step=end,
-                          migration_hook=None, verbose_header=False)
+                isl.train(start_step=max(start, isl.completed_steps), end_step=end,
+                          migration_hook=None, verbose_header=False,
+                          run_end_step=total_steps, run_start_step=start_step)
 
             if ModelConfig.ISLAND_PARALLEL and len(active) > 1:
                 # 岛级并行：PyTorch CPU 算子释放 GIL，整岛粒度可真并行；
@@ -236,8 +255,11 @@ class IslandAlphaEngine:
             self._update_global_best()
 
             if any(getattr(isl, "user_stopped", False) for isl in self.islands):
-                print("\n[岛训练] 收到停止信号，提前结束本轮岛训练"
-                      "（进度保留到最近一次迁移阶段检查点）")
+                self._step = start
+                self._phase_interrupted = True
+                self.save_checkpoint(start)
+                self._save_history()
+                print("[岛训练] Stopped safely; per-island completed steps preserved")
                 return
 
             # 阶段结束：迁移 elite
@@ -260,35 +282,21 @@ class IslandAlphaEngine:
 
             # 只有所有岛完成、迁移和全局最优同步都落定后才保存，续训状态一致。
             self._step = end
+            self._phase_interrupted = False
             self.global_history["step"].append(end)
             self.global_history["best_score"].append(self.global_best_score)
             self.save_checkpoint(end)
+            self._save_history()
             start = end
             phase_no += 1
 
-        # 最终保存全局最优
+        # Named strategies are saved by train_island_from_file through the shared guard.
         self._update_global_best()
-        if self.global_best_formula is not None:
-            from .vocab import VOCAB_VERSION
-            strategy_data = {
-                "vocab_version": VOCAB_VERSION,
-                "formula": self.global_best_formula,
-                "best_score": self.global_best_score,
-                "island_engine": True,
-                "n_islands": self.n_islands,
-            }
-            save_path = Path("strategies") / "best_island_strategy.json"
-            save_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(save_path, "w") as fp:
-                json.dump(strategy_data, fp, indent=2)
-            print(f"\n✓ Island training completed!")
-            print(f"  Global best score : {self.global_best_score:.4f}")
-            print(f"  From island       : {self.global_best_island + 1}")
-            print(f"  Formula           : {self.global_best_formula}")
-            sample_island = self.islands[self.global_best_island] if self.global_best_island >= 0 else self.islands[0]
-            readable = sample_island._decode_formula(self.global_best_formula)
-            print(f"  Readable          : {readable}")
-            print(f"  Saved to          : {save_path}")
+        self._save_history()
+
+    def _save_history(self):
+        if self.checkpoint_tag:
+            atomic_json_write(history_path(f"{self.checkpoint_tag}_island"), json_safe(self.global_history))
 
     def get_global_best(self):
         return self.global_best_formula, self.global_best_score

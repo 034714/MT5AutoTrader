@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import pathlib
 import sys
 import time
@@ -31,6 +30,7 @@ from data_pipeline.parquet_manager import ParquetDataManager, inspect_parquet_fi
 from model_core.config import ModelConfig
 from model_core.island_engine import IslandAlphaEngine
 from train_file import _save_strategy, file_tag, _seed_rng
+from utils.training_artifacts import checkpoint_dir, checkpoint_step, history_path, root_path, strategy_path
 
 
 def train_island_from_file(
@@ -38,7 +38,7 @@ def train_island_from_file(
     additional_steps: int = 0, resume_file: str | None = None, seed: int | None = None,
 ) -> IslandAlphaEngine | None:
     # 清掉旧的「停止训练」信号（引擎只读不删，避免岛模式后跑的岛吞掉信号）
-    stop_flag = pathlib.Path("TRAIN_STOP")
+    stop_flag = root_path("TRAIN_STOP")
     try:
         stop_flag.unlink(missing_ok=True)
     except OSError:
@@ -83,26 +83,29 @@ def train_island_from_file(
         mode="parquet_file",
     )
 
-    # 岛模式检查点仅在完整迁移阶段结束后写入；自动续训从最近阶段恢复。
-    ckpt_dir = pathlib.Path("checkpoints")
+    # Resume completed or interrupted phases using each island's saved progress.
+    ckpt_dir = checkpoint_dir()
     ckpt_pattern = f"island_ckpt_{tag}_step_*.pt"
-    ckpts = sorted(ckpt_dir.glob(ckpt_pattern)) if ckpt_dir.exists() else []
-    # 岛模式使用独立的全局曲线文件，不覆盖单引擎训练历史。
-    island_history_path = pathlib.Path(f"training_history_{tag}_island.json")
+    ckpts = sorted(ckpt_dir.glob(ckpt_pattern), key=checkpoint_step) if ckpt_dir.exists() else []
+    island_history_path = history_path(f"{tag}_island")
     start_step = 0
     if from_scratch:
         for p in ckpts:
             p.unlink(missing_ok=True)
-        for p in pathlib.Path(".").glob(f"training_history_{tag}__isl*.json"):
+        for p in island_history_path.parent.glob(f"training_history_{tag}__isl*.json"):
             p.unlink(missing_ok=True)
         island_history_path.unlink(missing_ok=True)
         print(f"  [从头训练] 已清除 {len(ckpts)} 个岛检查点和岛训练曲线")
     elif resume_file:
         rp = pathlib.Path(resume_file)
+        if not rp.is_absolute():
+            rp = root_path(rp)
         if rp.exists():
             try:
                 start_step = itrain.load_checkpoint(str(rp))
                 print(f"  [岛续训] 从指定检查点 {rp.name} 恢复，起始步={start_step}")
+            except ValueError:
+                raise
             except Exception as exc:
                 print(f"  [警告] 岛检查点加载失败: {exc}，将从头开始")
         else:
@@ -113,6 +116,8 @@ def train_island_from_file(
         try:
             start_step = itrain.load_checkpoint(str(ckpts[-1]))
             print(f"  [岛续训] 从 {ckpts[-1]} 恢复，起始步={start_step}")
+        except ValueError:
+            raise
         except Exception as exc:
             print(f"  [警告] 岛检查点加载失败: {exc}，将从头开始")
 
@@ -125,9 +130,7 @@ def train_island_from_file(
     # 岛内不设置旧策略分数下限：否则界面从第 1 步起永远显示旧高分，
     # 无法判断新一轮搜索有没有真实进展。旧策略保护只在最终 _save_strategy
     # 时执行，低分新结果绝不会覆盖磁盘上的已有策略。
-    strat_path = pathlib.Path("strategies") / f"best_{tag}.json"
-    if not strat_path.exists() and timeframe:
-        strat_path = pathlib.Path("strategies") / f"best_{symbol}.json"
+    strat_path = strategy_path(symbol, timeframe)
     if strat_path.exists():
         try:
             old_score = json.loads(strat_path.read_text(encoding="utf-8")).get("best_score")
@@ -140,35 +143,19 @@ def train_island_from_file(
     t0 = time.time()
     itrain.train(start_step=start_step)
     elapsed = time.time() - t0
-    # 给训练页提供岛模式的全局最佳曲线（按迁移阶段一条点），不混入单岛曲线。
-    if itrain.global_history.get("step"):
-        island_history_path.write_text(
-            json.dumps({
-                "step": itrain.global_history["step"],
-                "best_score": itrain.global_history["best_score"],
-            }, ensure_ascii=False), encoding="utf-8",
-        )
+    itrain._save_history()
 
-    # island_engine 内部会写一个固定名 best_island_strategy.json（多品种会互相
-    # 覆盖且无消费方）；真正的策略由下面按品种保存，删掉避免误导
-    try:
-        pathlib.Path("strategies", "best_island_strategy.json").unlink(missing_ok=True)
-    except OSError:
-        pass
-
-    # 岛→单引擎续训桥：把最优岛的完整状态导出为普通单引擎检查点，
-    # 之后单引擎「自动续训」会直接接上岛模式的成果继续训练。
-    if itrain.global_best_formula is not None and itrain._step > 0:
-        import torch as _torch
+    # Export the champion with its actual completed count, not a phase boundary.
+    if itrain.global_best_formula is not None:
         best_idx = itrain.global_best_island if itrain.global_best_island >= 0 else 0
-        out = pathlib.Path("checkpoints") / f"ckpt_{tag}_step_{itrain._step:04d}.pt"
-        out.parent.mkdir(exist_ok=True)
-        payload = itrain.islands[best_idx].checkpoint_state(itrain._step)
-        tmp = str(out) + ".tmp"
-        _torch.save(payload, tmp)
-        os.replace(tmp, out)
-        print(f"  [岛→单引擎] 最优岛状态已导出为普通检查点 {out.name}，"
-              f"单引擎下次训练会从这里继续")
+        champion = itrain.islands[best_idx]
+        old_symbol = champion.target_symbol
+        champion.target_symbol = symbol
+        try:
+            out = champion.save_checkpoint(champion.completed_steps)
+        finally:
+            champion.target_symbol = old_symbol
+        print(f"  [岛→单引擎] 已导出普通检查点 {Path(out).name}")
 
     # 用全局最优所在的岛引擎对象保存 best_{symbol}.json
     # （复用 train_file._save_strategy 的"磁盘更优不覆盖"守卫）

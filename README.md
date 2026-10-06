@@ -45,6 +45,7 @@ start.bat   （会优先使用 .venv）
 
 - 仅 Windows 可用（MetaTrader5 包依赖 Windows 的 MT5 终端）
 - Python 查找顺序：项目 `.venv` → `runtime\python.exe`（便携包内置）→ `fallback_python.txt` → 系统 PATH
+- 进程环境变量 `MT5AUTOTRADER_OFFLINE=1` 可离线查看网页、进行本地文件训练，但禁用 MT5 连接、Runner 启动与 direct-MT5 训练；不改用户配置。在不继承该变量的环境中用正常 `start.bat` 重启恢复默认模式。
 
 ## 快速上手（网页流程）
 
@@ -54,6 +55,30 @@ start.bat   （会优先使用 .venv）
 4. 风控参数页设置止损、阶梯保本、支撑/阻力优化
 5. 总览页的 K 线图可直接拖动设置止损/止盈/到价分批平仓
 
+## 训练与续训契约
+
+- 网页步数和 `train_file.py` / `train_island.py` 的正数 `--steps N` 都是**本次新增步数**：恢复起点 + N。未指定或为 0 时沿用默认总目标，不代表新增 0 步。
+- 训练曲线唯一目录是项目根目录下的 `training_history/`：普通曲线为 `training_history_{品种}_{周期}.json`，岛汇总增加 `_island`，单岛增加 `__islN`。网页不兼容根目录旧 `training_history*.json`，不会自动迁移。
+- 检查点保存 `training_context`：品种、周期、数据内容指纹、评分/特征/归一化/词表版本和评估参数。同上下文恢复训练状态与随机数状态；品种或周期不符会拒绝加载。缺少身份上下文的旧检查点不能用于有品种/周期的文件续训，需要明确从头训练。
+- 同品种同周期刷新数据或更改评估上下文属于 hotstart：保留模型、优化器和已完成步数，清空旧冠军分数、公式、候选池、奖励基线与曲线，并重置相关停滞/早停状态。不能把旧分数当作新数据的下限。
+- 检查点 `step` 表示实际已完成的更新数（引擎 `completed_steps`），不是曲线的零基 step，也不是计划目标。单引擎默认每 10 步保存、同标签保留最近 2 个，并在正常结束、早停或响应 `TRAIN_STOP` 后保存最终进度，短训练也能留下检查点。岛中断检查点的顶层 step 是阶段起点，各岛保存自身实际进度；续训跳过已完成更新，冠军导出普通检查点也用其实际步数。
+- 「停止训练」先写 `TRAIN_STOP`，最多等待 40 秒后强杀兜底；强杀、进程崩溃或写入失败不能保证最终进度已保存。产物通过同目录临时文件 + `os.replace` 替换，不保证断电持久性。策略仅在有有效有限分数冠军且保护条件允许时保存。
+- 已有策略文件按评分版本、特征语义及完整上下文保护：同上下文只接受更高分，不同上下文/旧口径不会被直接覆盖。从头训练会清理对应模式的检查点与曲线，但不自动删除已有策略；升级或换数据后的策略发布须先备份并明确处理旧文件，重新绑定前核对实际策略内容。
+
+## 评分与回测边界
+
+- 新训练默认 `feature_semantics_version=causal-features-v2`、`scoring_version=causal-portfolio-v3`，VM 归一化为 `causal-prefix-rolling500-v2`。单品种前 499 根输出中性，第 500 根起采用因果前缀常量判断和 500 根滚动归一化；多品种归一化使用同一时刻的截面，不看未来。
+- 既有策略缺少特征语义字段时按 `legacy-v1` 部署，保留旧特征计算和旧归一化；旧全局常量判断并非因果，不用于新训练或快速回测。未知语义版本拒绝加载，词表版本仍须匹配。旧文件名兼容不等于旧评分或检查点上下文兼容。
+- 训练评分是连续敞口 × 目标对数收益 − 换手成本的 **proxy**，用于搜索排序；不是固定手数、Bid/Ask 成交模型，也不是账户货币实际收益。验证段参与选冠军，仍需独立、未参与搜索的样本外检验。
+- 网页快速回测是只读 MT5 历史的固定手数、单仓位模拟：已收盘信号下一根开盘成交，最后已收盘 bar 收盘强制平仓；Bid K 线 + 历史 bar spread 近似 Ask。通过 `order_calc_profit` 用当前合约规则/汇率换算账户货币，滑点和单边佣金是用户假设，不含库存费。
+- 快速回测始终使用新版因果特征与归一化，旧策略的回测信号可能不同于其 `legacy-v1` 部署信号；不模拟 SL/TP、阶梯止损、S/R、部分止盈、完整 Runner 风控、保证金、流动性或成交失败。曲线回撤按 bar 收盘可平仓净权益，不含 bar 内极值。它不同于离线报告，也不发送订单或启动 Runner。
+
+## 账户与真实操作安全
+
+默认 `dry_run=true`。手动下单、平仓、挂单修改/撤销、SL/TP/分批止盈设置及切换真实模式都要求布尔 `confirmed=true` 和新鲜账户确认中的 `account_key=[server, login, currency]`（login 为整数）；前端拒绝过期或已切换的确认，后端核对账户键与当前终端身份是否一致。`order_check` 和挂单 `check_only=true` 仅检查参数，不要求执行确认但仍核对账户，不代表成交。手动确认操作可独立于 Runner 的 dry-run 作用于真实 MT5。
+
+实盘 Runner 将台账绑定到同一账户身份；账户不可用时暂停真实动作，发现切换时停止本轮 Runner。非空且没有账户归属的旧实盘台账不能自动接管，重启也不会把旧账户台账改属新账户。切换前停止 Runner，切换后核对持仓/挂单、台账、绑定与合约规格，再明确处理状态并重启。账户键和确认是软件检查，不是身份认证或券商级原子执行保证；文档、mock 测试、dry-run 或回测均不能作为真实实盘成交验证或盈利保证。
+
 ## 目录
 
 - `src/app.py`：FastAPI 看板
@@ -61,6 +86,8 @@ start.bat   （会优先使用 .venv）
 - `src/model_core/`：策略训练/公式执行核心
 - `src/data_pipeline/`：Parquet 和 MT5 数据管线
 - `strategies/`：本软件策略库（运行时生成）
+- `checkpoints/`：带训练上下文与已完成步数的续训检查点
+- `training_history/`：训练曲线唯一目录，不读取根目录旧曲线文件
 - `trader_config.json`：交易、绑定和风控配置（运行时生成，模板见 `trader_config.example.json`）
 - `logs/`：看板、Runner、训练和回测日志
 - `说明.txt`：中文详细使用教程
@@ -77,7 +104,7 @@ start.bat   （会优先使用 .venv）
 
 本项目整体基于 [GNU AGPL-3.0](LICENSE) 发布。包含的第三方代码：
 
-- [AlphaMaster](https://github.com/rosemarycox5334-debug/AlphaMaster)（AGPL-3.0）——策略训练引擎（`src/model_core/`、信号/特征计算链路）源自该项目，策略 JSON 格式与其兼容
+- [AlphaMaster](https://github.com/rosemarycox5334-debug/AlphaMaster)（AGPL-3.0）——策略训练引擎（`src/model_core/`、信号/特征计算链路）源自该项目；导入策略仍须符合当前词表与语义版本契约，不能假设任意旧 JSON 或检查点兼容
 - [Detect_support_and_resistance_levels](https://github.com/rosemarycox5334-debug/Detect_support_and_resistance_levels)（GPL-3.0）——支撑/阻力位 V3 融合算法，内嵌于 `src/trading/srlab/`（含概率模型 `models/*.json`）
 
   

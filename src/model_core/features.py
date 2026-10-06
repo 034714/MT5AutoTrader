@@ -16,8 +16,13 @@ Output: [N, 30, T], all normalized, no NaN/Inf. (v3.0: 20→30 features)
 每个 compute 的签名为 `(raw_dict: dict) -> Tensor[N, T]`。
 """
 import torch
+from contextvars import ContextVar
 
 from .registry import FeatureSpec, Registry
+
+FEATURE_SEMANTICS_VERSION = "causal-features-v2"
+LEGACY_FEATURE_SEMANTICS_VERSION = "legacy-v1"
+_FEATURE_SEMANTICS = ContextVar("feature_semantics", default=FEATURE_SEMANTICS_VERSION)
 
 
 class MT5FeatureEngineer:
@@ -227,8 +232,8 @@ class MT5FeatureEngineer:
 
         默认路径（exact=False）：
             向量化因果卷积近似，复杂度 O(N·T·w)，无逐时间步 Python 循环（R8.3）。
-            alpha = 2/(span+1)；有效窗口 w = min(T, ceil(-log(1e-6)/(-log(1-alpha))))，
-            保证尾部权重 (1-alpha)^w < 1e-6。
+            alpha = 2/(span+1)；有效窗口 w 仅由 span 决定，
+            保证尾部权重 (1-alpha)^w < 1e-6，不随输入长度切换实现。
             使用首值填充（first-value padding）以匹配递推版初始条件 out[0]=x[0]，
             max|Δ| 与递推版差异实测 < 1e-4。
 
@@ -253,24 +258,27 @@ class MT5FeatureEngineer:
         # w_full 仅由 span 决定，不依赖 T，保证因果性
         w_full = max(1, math.ceil(-math.log(1e-6) / (-math.log(1.0 - alpha))))
 
-        # T < 2*w_full：精确递推（严格因果 O(N·T)）；
-        # T >= 2*w_full：向量化卷积近似，首值填充，max|Δ| < 1e-4。
-        # 固定阈值 2*w_full 确保不同长度序列超阈值后行为一致。
-        if T < 2 * w_full:
+        # Fixed span-only kernel for every length makes prefixes identical.
+        # The legacy strategy mode retains the original length-based switch.
+        if (_FEATURE_SEMANTICS.get() == LEGACY_FEATURE_SEMANTICS_VERSION
+                and T < 2 * w_full):
             out = torch.zeros_like(x)
             out[:, 0] = x[:, 0]
             for t in range(1, T):
                 out[:, t] = alpha * x[:, t] + (1 - alpha) * out[:, t - 1]
             return out
 
-        # T >= 2*w_full：向量化，首值填充，max|Δ| < 1e-4
+        # Causal fixed-span convolution, with original arithmetic in legacy mode.
         decay = 1.0 - alpha
-        powers = torch.arange(w_full - 1, -1, -1, dtype=x.dtype, device=x.device)
-        weights = alpha * (decay ** powers)                    # 未归一化
-        first = x[:, :1].expand(N, w_full - 1)                # [N, w_full-1] 首值填充
-        xp = torch.cat([first, x], dim=1)
-        windows = xp.unfold(1, w_full, 1)                      # [N, T, w_full]
-        out = (windows * weights).sum(dim=-1)                  # [N, T]
+        latest = _FEATURE_SEMANTICS.get() != LEGACY_FEATURE_SEMANTICS_VERSION
+        calc_dtype = torch.float64 if latest else x.dtype
+        powers = torch.arange(w_full - 1, -1, -1, dtype=calc_dtype, device=x.device)
+        weights = alpha * (decay ** powers)
+        work = x.to(calc_dtype)
+        first = work[:, :1].expand(N, w_full - 1)
+        xp = torch.cat([first, work], dim=1)
+        windows = xp.unfold(1, w_full, 1)
+        out = (windows * weights).sum(dim=-1).to(x.dtype)
         return torch.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0)
 
     @staticmethod
@@ -309,8 +317,18 @@ class MT5FeatureEngineer:
         pad = torch.zeros(close.shape[0], w - 1, device=close.device, dtype=high.dtype)
         hw = torch.cat([pad, high], dim=1).unfold(1, w, 1).max(dim=-1).values
         lw = torch.cat([pad, low], dim=1).unfold(1, w, 1).min(dim=-1).values
-        willr = (hw - close) / (hw - lw + eps)
+        willr = -(hw - close) / (hw - lw + eps)
         return torch.clamp(willr, -1.0, 0.0)
+
+    @staticmethod
+    def _willr_legacy(close: torch.Tensor, high: torch.Tensor,
+                      low: torch.Tensor, w: int = 14) -> torch.Tensor:
+        """Original legacy implementation retained for deployed strategies."""
+        eps = MT5FeatureEngineer._EPS
+        pad = torch.zeros(close.shape[0], w - 1, device=close.device, dtype=high.dtype)
+        hw = torch.cat([pad, high], dim=1).unfold(1, w, 1).max(dim=-1).values
+        lw = torch.cat([pad, low], dim=1).unfold(1, w, 1).min(dim=-1).values
+        return torch.clamp((hw - close) / (hw - lw + eps), -1.0, 0.0)
 
     @staticmethod
     def _cci(close: torch.Tensor, high: torch.Tensor,
@@ -1363,12 +1381,36 @@ class MT5FeatureEngineer:
     # ── main ─────────────────────────────────────────────────────────────
 
     @staticmethod
-    def compute_features(raw_dict: dict) -> torch.Tensor:
-        """按 FEATURE_REGISTRY 注册顺序计算全部特征，堆叠为 [N, F, T]。
+    def compute_features(
+        raw_dict: dict,
+        semantics_version: str = FEATURE_SEMANTICS_VERSION,
+    ) -> torch.Tensor:
+        """Compute registered features under an explicit semantic contract.
 
-        逐特征 compute 的数值与顺序与重构前逐元素一致；出口统一 nan_to_num→0。
+        ``causal-features-v2`` is the default. ``legacy-v1`` is an opt-in
+        calculation mode for already deployed strategies; it does not restore
+        any historical data-loading behavior.
         """
-        feats = [spec.compute(raw_dict) for spec in FEATURE_REGISTRY.feature_specs]
+        if semantics_version not in (
+            FEATURE_SEMANTICS_VERSION,
+            LEGACY_FEATURE_SEMANTICS_VERSION,
+        ):
+            raise ValueError(f"Unknown feature semantics version: {semantics_version}")
+        token = _FEATURE_SEMANTICS.set(semantics_version)
+        try:
+            feats = []
+            for spec in FEATURE_REGISTRY.feature_specs:
+                if (semantics_version == LEGACY_FEATURE_SEMANTICS_VERSION
+                        and spec.name == "WILLR_14"):
+                    value = MT5FeatureEngineer._willr_legacy(
+                        raw_dict["close"].float(), raw_dict["high"].float(),
+                        raw_dict["low"].float(),
+                    )
+                else:
+                    value = spec.compute(raw_dict)
+                feats.append(value)
+        finally:
+            _FEATURE_SEMANTICS.reset(token)
         features = torch.stack(feats, dim=1)
         return torch.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
 

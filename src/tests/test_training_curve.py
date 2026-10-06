@@ -14,7 +14,8 @@ class TrainingCurveTests(unittest.TestCase):
     def test_nonfinite_initial_scores_are_skipped(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / "training_history_TEST__M5.json").write_text(json.dumps({
+            (root / "training_history").mkdir()
+            (root / "training_history" / "training_history_TEST__M5.json").write_text(json.dumps({
                 "step": [0, 1, 2, 3, "bad"],
                 "best_score": [float("-inf"), float("nan"), -0.5, 1.25, 2.0],
             }), encoding="utf-8")
@@ -28,7 +29,8 @@ class TrainingCurveTests(unittest.TestCase):
     def test_all_invalid_scores_returns_empty_curve_not_error(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / "training_history_TEST.json").write_text(json.dumps({
+            (root / "training_history").mkdir()
+            (root / "training_history" / "training_history_TEST.json").write_text(json.dumps({
                 "step": [0, 1], "best_score": [float("-inf"), float("nan")],
             }), encoding="utf-8")
             with patch.object(app, "ROOT", root), patch.object(app.training_job, "args", {}):

@@ -79,7 +79,7 @@ class PositionBook:
         self.mode = mode  # "dry" | "live"
         self.state: dict = {"mode": mode, "next_ticket": 9_000_000_001,
                             "positions": {}, "tickets": {}, "actions": [],
-                            "cooldowns": {}}
+                            "cooldowns": {}, "pending_execution": {}, "managed": {}}
         self._load()
 
     def _load(self) -> None:
@@ -93,16 +93,20 @@ class PositionBook:
                 self.state.setdefault("tickets", {})
                 self.state.setdefault("actions", [])
                 self.state.setdefault("cooldowns", {})
+                self.state.setdefault("pending_execution", {})
+                self.state.setdefault("managed", {})
         except (json.JSONDecodeError, OSError) as exc:
             logger.warning(f"[状态] portfolio_state.json 读取失败: {exc}")
 
-    def save(self) -> None:
+    def save(self) -> bool:
         try:
             tmp = STATE_FILE.with_suffix(".tmp")
             tmp.write_text(json.dumps(self.state, indent=2, ensure_ascii=False), encoding="utf-8")
             tmp.replace(STATE_FILE)
+            return True
         except OSError as exc:
             logger.error(f"[状态] portfolio_state.json 写入失败: {exc}")
+            return False
 
     # ── 仓位操作 ────────────────────────────────────────────────
 
@@ -276,6 +280,61 @@ class TradingRunner:
 
     # ── 仓位视图 ────────────────────────────────────────────────
 
+    def _current_account_identity(self) -> list | None:
+        try:
+            ai = self.client.account_info()
+            if ai is None:
+                return None
+            server = str(getattr(ai, "server", ""))
+            login = int(getattr(ai, "login", 0))
+            currency = str(getattr(ai, "currency", ""))
+            if not server or login <= 0 or not currency:
+                return None
+            return [server, login, currency]
+        except (AttributeError, TypeError, ValueError):
+            return None
+
+    def _override_matches_account(self, override: dict) -> bool:
+        """覆盖必须明确绑定当前账户，避免 ticket 复用造成跨账户误操作。"""
+        account_key = override.get("account_key")
+        return isinstance(account_key, list) and account_key == self._current_account_identity()
+
+    def _account_confirmed(self) -> bool:
+        """Bind live state to server/login/currency; a switch permanently stops this runner."""
+        if self.book is None or self.book.mode != "live":
+            return True
+        if getattr(self, "_account_changed", False):
+            return False
+        identity = self._current_account_identity()
+        if not identity:
+            self._last_error = "Account identity unavailable; live actions paused"
+            return False
+        expected = self.book.state.get("account_identity")
+        if expected is None:
+            # Legacy state has no account attribution. Do not attach it to a new account.
+            if self.book.state["positions"] or self.book.state.get("managed") or \
+                    self.book.state.get("pending_execution"):
+                self._last_error = "Legacy live state has no account identity; reconcile manually"
+                return False
+            self.book.state["account_identity"] = identity
+            if not self.book.save():
+                self.book.state.pop("account_identity", None)
+                return False
+        elif expected != identity:
+            self._account_changed = True
+            self._stop = True
+            self._last_error = "MT5 account changed; stopped live actions, restart after reconciliation"
+            return False
+        return True
+
+    def _management_entries(self) -> list[tuple[str, dict]]:
+        entries = list(self.book.state["positions"].items())
+        seen = {int(info["ticket"]) for _, info in entries}
+        entries.extend((info["symbol"], info) for info in
+                       self.book.state.setdefault("managed", {}).values()
+                       if int(info["ticket"]) not in seen)
+        return entries
+
     def _sync_live_positions(self) -> None:
         """live 模式：与 MT5 持仓对账（magic 已过滤）。
 
@@ -283,7 +342,17 @@ class TradingRunner:
         - 台账有而 MT5 无 → 已被止损/手动平仓，清台账并记录
         - 同步时顺带刷新现价/浮盈/止损/止盈，供看板展示
         """
+        if not self._account_confirmed():
+            return
         snapshot = self.client.get_positions(strict=True)
+        for ticket, info in list(self.book.state.setdefault("managed", {}).items()):
+            match = next((p for p in snapshot if int(p.ticket) == int(ticket)), None)
+            if match is None:
+                del self.book.state["managed"][ticket]
+            else:
+                info["volume"] = float(match.volume)
+                info["sl"] = float(getattr(match, "sl", 0) or 0)
+                info["tp"] = float(getattr(match, "tp", 0) or 0)
         for symbol in list(self.book.state["positions"].keys()):
             info = self.book.get_position(symbol)
             if info is None:
@@ -375,6 +444,10 @@ class TradingRunner:
 
     def _close_symbol(self, symbol: str) -> bool:
         """平掉该品种全部仓位并确认。成功返回 True。"""
+        if not self._account_confirmed():
+            return False
+        if self.book.mode == "live" and self._execution_blocked(symbol):
+            return False
         if self.book.mode == "dry":
             info = self.book.get_position(symbol)
             if info is None:
@@ -387,30 +460,33 @@ class TradingRunner:
             return ok
         # live：只有成功查询确认全平才记录，空调用不刷新冷却。
         had_position = self.book.get_position(symbol) is not None
-        for attempt in range(3):
-            positions = self.client.get_positions(symbol, strict=True)
-            if not positions:
-                self.book.clear_symbol(symbol)
-                if had_position:
-                    self.book.mark_full_close(symbol)
-                return True
-            had_position = True
-            ok = self.client.close_symbol_all(symbol)
-            if ok:
-                time.sleep(0.5)
-                if not self.client.get_positions(symbol, strict=True):
-                    self.book.clear_symbol(symbol)
-                    self.book.mark_full_close(symbol)   # 全平 → 进入再入场冷却
-                    self.book.record_action(f"{symbol} 平仓成功")
-                    return True
-            logger.warning(f"[平仓] {symbol} 第 {attempt+1} 次尝试未完全平掉，重试")
-            time.sleep(0.5)
-        remaining = self.client.get_positions(symbol, strict=True)
-        if not remaining:
+        positions = self.client.get_positions(symbol, strict=True)
+        if not positions:
+            self.book.clear_symbol(symbol)
+            if had_position:
+                self.book.mark_full_close(symbol)
+            return True
+        pending = {"kind": "close", "before": [int(p.ticket) for p in positions]}
+        self.book.state.setdefault("pending_execution", {})[symbol] = pending
+        if not self.book.save():
+            return False
+        # Persist before crossing the execution boundary.
+        if not self._account_confirmed():
+            return False
+        ok = self.client.close_symbol_all(symbol)
+        execution = getattr(self.client, "last_execution", {})
+        if not ok and (execution.get("unknown") or execution.get("accepted")):
+            pending["result"] = execution
+            self.book.save()
+            return False
+        remaining_positions = self.client.get_positions(symbol, strict=True)
+        self.book.state["pending_execution"].pop(symbol, None)
+        self.book.save()
+        if not remaining_positions:
             self.book.clear_symbol(symbol)
             self.book.mark_full_close(symbol)
+            self.book.record_action(f"{symbol} 平仓成功")
             return True
-        self.book.record_action(f"{symbol} 平仓失败（仍有 {len(remaining)} 笔持仓）")
         return False
 
     def _tf_for_strategy(self, strategy_path: str) -> tuple[int, int, str]:
@@ -419,10 +495,59 @@ class TradingRunner:
         tf_str = str(strategy.get("timeframe") or "H1").upper()
         return Config.get_timeframe(tf_str), Config.timeframe_seconds(tf_str), tf_str
 
+    def _execution_blocked(self, symbol: str) -> bool:
+        pending = self.book.state.setdefault("pending_execution", {}).get(symbol)
+        if not pending:
+            return False
+        positions = self.client.get_positions(symbol, strict=True)
+        if pending["kind"] == "open" and not self._account_confirmed():
+            return True
+        if pending["kind"] == "close":
+            if not positions:
+                self.book.state["pending_execution"].pop(symbol)
+                self.book.clear_symbol(symbol)
+                self.book.mark_full_close(symbol)
+                self.book.save()
+                return False
+        elif pending["kind"] == "open":
+            result = pending.get("result", {})
+            candidates = self._match_open(positions, pending)
+            # Partial executions may still have a working remainder: retain the barrier.
+            if len(candidates) == 1 and result.get("status") == "completed":
+                p = candidates[0]
+                self.book.set_position(symbol, {
+                    "ticket": int(p.ticket), "identifier": int(getattr(p, "identifier", p.ticket)),
+                    "direction": "BUY" if p.type == 0 else "SELL", "volume": float(p.volume),
+                    "open_price": float(p.price_open), "sl": float(getattr(p, "sl", 0) or 0),
+                    "tp": float(getattr(p, "tp", 0) or 0), "sr_partial": pending.get("sr_partial"),
+                    "strategy": pending.get("strategy", ""), "dry_run": False,
+                })
+                self.book.state["pending_execution"].pop(symbol)
+                self.book.save()
+                return False
+        self._last_error = f"{symbol}: unresolved execution; reconcile order/deals before retry"
+        return True
+
+    @staticmethod
+    def _match_open(positions: list, pending: dict) -> list:
+        before = set(pending.get("before", []))
+        result = pending.get("result", {})
+        order = int(result.get("order") or 0)
+        identifier = int(result.get("position_id") or 0)
+        return [p for p in positions
+                if int(p.ticket) not in before
+                and ("BUY" if p.type == 0 else "SELL") == pending["direction"]
+                and ((order and int(p.ticket) == order) or
+                     (identifier and int(getattr(p, "identifier", 0)) == identifier))]
+
     def _open_position(self, symbol: str, direction: str, binding: dict,
                        strategy_path: str) -> bool:
         """开仓（带初始止损）。成功返回 True 并写台账。"""
+        if not self._account_confirmed():
+            return False
         if self.book.mode == "live":
+            if self._execution_blocked(symbol):
+                return False
             self._sync_live_positions()
         if self._block_open_cooldown(symbol):
             return False
@@ -512,8 +637,33 @@ class TradingRunner:
             sl = initial_stop_price(direction, ref_price, self.risk.params.stop_loss_pct)
             tp = None
 
+        if direction not in ("BUY", "SELL") or not math.isfinite(ref_price) or ref_price <= 0 or \
+                not math.isfinite(sl) or sl <= 0:
+            return False
+        pending = None
+        if self.book.mode == "live":
+            if not self._account_confirmed():
+                return False
+            before = self.client.get_positions(symbol, strict=True)
+            # No unrequested scaling/netting into an existing position.
+            if before:
+                return False
+            pending = {"kind": "open", "direction": direction,
+                       "before": [int(p.ticket) for p in before], "strategy": strategy_path,
+                       "sr_partial": sr_partial}
+            self.book.state.setdefault("pending_execution", {})[symbol] = pending
+            if not self.book.save():
+                return False
         result = self.client.market_open(symbol, direction, lot, sl=sl, tp=tp)
+        if pending is not None:
+            result = dict(result)
+            result.setdefault("status", "completed" if result.get("ok") else "rejected")
+            pending["result"] = result
+            self.book.save()
         if not result["ok"]:
+            if pending is not None and result.get("status") == "rejected":
+                self.book.state["pending_execution"].pop(symbol, None)
+                self.book.save()
             hint = result.get("hint") or ""
             self.book.record_action(
                 f"{symbol} 开仓失败 {direction} {lot}手 retcode={result['retcode']}"
@@ -539,19 +689,14 @@ class TradingRunner:
 
         # live：重新读取真实持仓，记录真实 ticket / 成交价
         time.sleep(0.5)
-        positions = self.client.get_positions(symbol)
-        if not positions:
-            # 用 order result 的 order id 再找一次
-            found = False
-            for p in self.client.get_positions():
-                if result.get("order") and int(p.ticket) == int(result["order"]):
-                    positions = [p]
-                    found = True
-                    break
-            if not found:
-                self.book.record_action(f"{symbol} 开仓成功但未找到持仓记录，请人工检查")
-                return False
-        p = positions[0]
+        positions = self.client.get_positions(symbol, strict=True)
+        matches = self._match_open(positions, pending)
+        if len(matches) != 1:
+            self.book.record_action(f"{symbol} 开仓结果未唯一匹配，禁止重复发送，请核对成交")
+            return False
+        p = matches[0]
+        if sr_partial and abs(float(p.volume) - lot) > 1e-8:
+            sr_partial = {"price": 0.0, "done": True, "skipped": "actual_volume_differs"}
         direction_live = "BUY" if p.type == 0 else "SELL"
         info = {
             "ticket": int(p.ticket), "direction": direction_live,
@@ -565,6 +710,9 @@ class TradingRunner:
         }
         # 开仓请求带了初始止损但可能被拒单重试；若无 SL，这里补记由风控循环兜底
         self.book.set_position(symbol, info)
+        if result.get("status") == "completed":
+            self.book.state["pending_execution"].pop(symbol, None)
+        self.book.save()
         self.book.record_action(
             f"{symbol} 开仓 {direction_live} {info['volume']}手 "
             f"@{info['open_price']:.5f} ticket={info['ticket']} SL={info['sl'] or sl:.5f}"
@@ -669,7 +817,7 @@ class TradingRunner:
     def _apply_partial_overrides(self, overrides: dict) -> None:
         """把看板的止盈一半手动设置应用到台账（同一时间戳只应用一次）。"""
         for key, ov in overrides.items():
-            if not isinstance(ov, dict):
+            if not isinstance(ov, dict) or not self._override_matches_account(ov):
                 continue
             try:
                 ticket = int(key)
@@ -678,15 +826,20 @@ class TradingRunner:
                 continue
             if self._ov_applied_ts.get(ticket, -1.0) >= ts:
                 continue
-            match = [(sym, inf) for sym, inf in self.book.state["positions"].items()
+            match = [(sym, inf) for sym, inf in self._management_entries()
                      if int(inf.get("ticket", 0)) == ticket]
             if not match:
                 # 仓位可能在别的循环才被纳入台账，下一圈再试
                 continue
             symbol, info = match[0]
+            if (info.get("sr_partial") or {}).get("inflight") and \
+                    not (info.get("sr_partial") or {}).get("done"):
+                continue  # A replacement plan must not erase an ambiguous close.
             price = float(ov.get("price", 0) or 0)
             close_vol = float(ov.get("close_volume", 0) or 0)
             lot = float(info.get("volume") or 0)
+            if not all(math.isfinite(v) for v in (price, close_vol, lot, ts)):
+                continue
             if price <= 0:
                 info["sr_partial"] = {"price": 0.0, "done": True,
                                       "skipped": "override_cleared"}
@@ -735,7 +888,7 @@ class TradingRunner:
         if applied is None:
             applied = self._sl_ov_applied_ts = {}
         for key, ov in overrides.items():
-            if not isinstance(ov, dict):
+            if not isinstance(ov, dict) or not self._override_matches_account(ov):
                 continue
             try:
                 ticket = int(key)
@@ -745,7 +898,7 @@ class TradingRunner:
                 continue
             if self._sl_ov_applied_ts.get(ticket, -1.0) >= ts:
                 continue
-            match = [(sym, inf) for sym, inf in self.book.state["positions"].items()
+            match = [(sym, inf) for sym, inf in self._management_entries()
                      if int(inf.get("ticket", 0)) == ticket]
             if not match:
                 continue
@@ -766,18 +919,15 @@ class TradingRunner:
         """
         from trading.sr import SRParams
         params = SRParams.from_config()
-        # 手动覆盖优先于自动开关：用户在网页上明确设置的到价平仓始终生效
-        overrides = self._load_partial_overrides()
-        if overrides:
-            self._apply_partial_overrides(overrides)
-        if not params.enabled or not params.partial_enabled:
+        if not self._account_confirmed():
             return
+        automatic = params.enabled and params.partial_enabled
         targets: list[tuple[str, dict]] = []
         if self.book.mode == "live":
-            for p in self.client.get_positions():
+            for p in self.client.get_positions(strict=True):
                 sym = str(p.symbol)
                 info = None
-                for s, inf in self.book.state["positions"].items():
+                for s, inf in self._management_entries():
                     if int(inf.get("ticket", 0)) == int(p.ticket):
                         info = inf
                         break
@@ -791,20 +941,36 @@ class TradingRunner:
                         "tp": float(getattr(p, "tp", 0.0) or 0.0),
                         "locked": LOCK_NONE, "dry_run": False, "manual": True,
                     }
-                    self.book.set_position(sym, info)
+                    info["symbol"] = sym
+                    if self.book.get_position(sym) is None:
+                        self.book.set_position(sym, info)
+                    else:
+                        self.book.state.setdefault("managed", {})[str(p.ticket)] = info
                     self.book.record_action(
                         f"{sym} 纳入管理：MT5 持仓 ticket={int(p.ticket)}（含关键位止盈一半）"
                     )
+                info["volume"] = float(p.volume)
                 targets.append((sym, info))
         else:
-            targets = [(s, inf) for s, inf in list(self.book.state["positions"].items())]
+            targets = self._management_entries()
+        overrides = self._load_partial_overrides()
+        if overrides:
+            self._apply_partial_overrides(overrides)
 
         for symbol, info in targets:
             try:
                 plan = info.get("sr_partial")
-                if plan is None:
+                if plan is None and automatic:
                     plan = self._backfill_partial_plan(symbol, info, params)
-                if not plan or plan.get("done"):
+                if not plan or plan.get("done") or (not automatic and not plan.get("manual")):
+                    continue
+                if plan.get("inflight"):
+                    if self.book.mode == "live":
+                        live = self.client.get_positions(symbol, strict=True)
+                        remaining_now = next((float(p.volume) for p in live
+                                              if int(p.ticket) == int(info["ticket"])), 0.0)
+                        if remaining_now <= float(plan["remaining"]) + 1e-8:
+                            plan["done"] = True
                     continue
                 trigger = float(plan.get("price") or 0)
                 if trigger <= 0:
@@ -819,10 +985,24 @@ class TradingRunner:
                     continue
                 close_vol = float(plan.get("close_volume") or 0)
                 remaining = float(plan.get("remaining") or 0)
+                if close_vol <= 0 or remaining <= 0 or not all(math.isfinite(v)
+                    for v in (trigger, close_vol, remaining)):
+                    continue
+                if self.book.mode == "live" and self._execution_blocked(symbol):
+                    continue
+                if not self._account_confirmed():
+                    return
+                plan["inflight"] = True
+                if not self.book.save():
+                    continue
                 ok = self.client.close_position(symbol, int(info["ticket"]),
                                                 volume=close_vol)
                 if not ok:
-                    continue          # 下一圈重试
+                    execution = getattr(self.client, "last_execution", {})
+                    if not (execution.get("unknown") or execution.get("accepted")):
+                        plan.pop("inflight", None)
+                    self.book.save()
+                    continue
                 if self.book.mode == "dry" and remaining > 0:
                     info["volume"] = remaining
                 plan["done"] = True
@@ -891,63 +1071,40 @@ class TradingRunner:
                 )
 
     def _normalize_lot(self, symbol: str, lot: float) -> float:
+        if not math.isfinite(lot) or lot <= 0:
+            return 0.0
         step = self.client.volume_step(symbol) or 0.01
+        if not math.isfinite(step) or step <= 0:
+            return 0.0
         lot = max(step, round(lot / step) * step)
         max_lot = float(getattr(Config, "MAX_LOT_PER_TRADE", 1.0) or 1.0)
         return round(min(lot, max_lot), 2)
 
     # ── 信号 → 对账 ─────────────────────────────────────────────
 
-    def _reconcile(self, binding: dict, direction: str, strength: float) -> None:
+    def _reconcile(self, binding: dict, direction: str, strength: float) -> bool:
         symbol = binding["symbol"]
+        if not self._account_confirmed():
+            return False
+        if self.book.mode == "live" and self._execution_blocked(symbol):
+            return False
         strategy_path = binding.get("strategy_file", "")
         target = DIRECTION_TO_INT.get(direction, 0)
         current = self._current_direction(symbol)
-        action = reconcile_action(current if current in (-1, 0, 1) else 0, target)
-
         if current == 2:
-            # 对冲残留：先全部平掉（本轮不开新仓，下根K线再对账）
-            self.book.record_action(f"{symbol} 检测到双向持仓，先全部平掉")
-            self._close_symbol(symbol)
-            return
-
+            return self._close_symbol(symbol)
+        action = reconcile_action(current, target)
         if action == "HOLD":
-            return
-
+            return True
         if action == "CLOSE":
-            self.book.record_action(
-                f"{symbol} 信号 {direction}（强度{strength:.2f}）→ 平仓"
-            )
-            self._close_symbol(symbol)
-            return
-
-        if action in ("OPEN_LONG", "OPEN_SHORT"):
-            want = "BUY" if action == "OPEN_LONG" else "SELL"
-            # 全平后再入场冷却：60 秒内（可配）禁止任何方向重新开仓
-            if self._block_open_cooldown(symbol):
-                return
-            # 防御：开仓前确保没有残留仓位
-            if self._current_direction(symbol) != 0:
-                if not self._close_symbol(symbol):
-                    self.book.record_action(f"{symbol} 开仓前清理旧仓失败，禁止开新仓")
-                    return
-            self.book.record_action(
-                f"{symbol} 信号 {direction}（强度{strength:.2f}）→ 开{'多' if want=='BUY' else '空'}"
-            )
-            self._open_position(symbol, want, binding, strategy_path)
-            return
-
-        if action in ("REVERSE_TO_LONG", "REVERSE_TO_SHORT"):
-            want = "BUY" if action == "REVERSE_TO_LONG" else "SELL"
-            # 平仓始终允许；全平后由 _open_position 统一执行冷却拦截。
-            self.book.record_action(
-                f"{symbol} 信号反向 {direction}（强度{strength:.2f}）→ 先平旧仓再反手"
-            )
-            if not self._close_symbol(symbol):
-                self.book.record_action(f"{symbol} 反手失败：平旧仓未成功，禁止开反向仓")
-                return
-            self._open_position(symbol, want, binding, strategy_path)
-            return
+            return self._close_symbol(symbol)
+        if action in ("OPEN_LONG", "OPEN_SHORT", "REVERSE_TO_LONG", "REVERSE_TO_SHORT"):
+            want = "BUY" if action in ("OPEN_LONG", "REVERSE_TO_LONG") else "SELL"
+            if current and not self._close_symbol(symbol):
+                self.book.record_action(f"{symbol} 平仓失败或未确认，禁止开反向仓")
+                return False
+            return self._open_position(symbol, want, binding, strategy_path)
+        return False
 
     def _process_symbol(self, binding: dict, force: bool = False) -> None:
         """对单个绑定品种：检查新收盘K线 → 算信号 → 对账。
@@ -990,8 +1147,8 @@ class TradingRunner:
         signal = compute_signal(
             [strategy["formula"]], raw_dict,
             min_trade_exposure=float(Config.MIN_TRADE_EXPOSURE),
+            semantics_version=strategy.get("feature_semantics_version", "legacy-v1"),
         )
-        self._last_bar_time[symbol] = last_closed_time
         signal_entry = {
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             # MT5 的 bar time 是「开盘时间」；H1 的 13:00 那根要到 14:00 才收盘。
@@ -1014,17 +1171,22 @@ class TradingRunner:
         )
 
         if signal.get("state") != "ok":
+            if signal.get("state") == "hold":
+                self._last_bar_time[symbol] = last_closed_time
             return
         self.book.save()  # 对账前先落盘
-        self._reconcile(binding, signal["direction"], float(signal.get("strength", 0.0)))
+        if self._reconcile(binding, signal["direction"], float(signal.get("strength", 0.0))):
+            self._last_bar_time[symbol] = last_closed_time
 
     # ── 实时风控 ────────────────────────────────────────────────
 
     def _monitor_positions(self) -> None:
+        if not self._account_confirmed():
+            return
+        # Manual partial plans remain active independently of automatic price protection.
+        self._check_partial_take_profits()
         if not self.risk.params.enable_price_monitor:
             return
-        # 关键位前止盈一半（两种模式都做，排在整单止盈之前）
-        self._check_partial_take_profits()
         if self.book.mode == "dry":
             # dry-run 模拟止盈：MT5 服务器不会帮本地台账执行 TP，这里手动触发
             self._check_dry_take_profits()
@@ -1042,6 +1204,8 @@ class TradingRunner:
                                 float(p.price_open), float(getattr(p, "sl", 0.0) or 0.0),
                                 self.book.locked_for(p.ticket), False))
         for symbol, ticket, direction, open_price, sl, locked, is_dry in targets:
+            if not self._account_confirmed():
+                return
             try:
                 moved, new_locked, reason = self.risk.protect_position(
                     symbol, ticket, direction, open_price, sl, locked
@@ -1096,7 +1260,8 @@ class TradingRunner:
             live_list: list = []
             for p in self.client.get_positions():
                 info = position_to_dict(self.client, p, server_offset)
-                book_info = self.book.get_position(info["symbol"]) if self.book else None
+                book_info = next((inf for _, inf in self._management_entries()
+                                  if int(inf["ticket"]) == int(p.ticket)), None)
                 if book_info and int(book_info.get("ticket", 0)) == int(p.ticket) \
                         and book_info.get("sr_partial"):
                     info["sr_partial"] = book_info["sr_partial"]
@@ -1190,6 +1355,13 @@ class TradingRunner:
                         self._write_status("waiting_mt5")
                         self._sleep_loop(loop_t0)
                         continue
+                if not self._account_confirmed():
+                    self._write_status("account_changed" if getattr(self, "_account_changed", False)
+                                       else "waiting_account")
+                    if self._stop:
+                        break
+                    self._sleep_loop(loop_t0)
+                    continue
                 self._last_error = None
                 self._server_offset = self.client.server_time_offset()
 
