@@ -273,7 +273,7 @@ def run_quick_backtest(root, payload, cfg, mt5, *, signal_fn=None, server_offset
     if not math.isclose(units, round(units), abs_tol=1e-7, rel_tol=0):
         raise QuickBacktestError(f"lot 必须符合步长 {lots['step']}")
     warmup = _warmup(cfg)
-    threshold = number(cfg.get("min_trade_exposure", 0.05), "min_trade_exposure", 1e-8, 1)
+    threshold = number(cfg.get("min_trade_exposure", 0.7), "min_trade_exposure", 1e-8, 1)
     point = number(getattr(info, "point", None), "MT5 point", 1e-12, 1e6)
     timeframe = getattr(mt5, "TIMEFRAME_" + meta["timeframe"], None)
     if timeframe is None:

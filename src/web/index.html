@@ -279,7 +279,7 @@ function applyMaterial(v) {
         <h3>使用提示</h3>
         <div class="hint" style="line-height:2">
           ① 训练页选数据训练 → ② 策略库导入并绑定品种 →<br>
-          ③ 交易控制页启动 Runner（默认 dry-run 演练）→<br>
+          ③ 已绑定策略时启动软件会自动启动 dry-run Runner；首次绑定后可手动启动 →<br>
           ④ 确认信号正常后切真实模式。<br>
           MT5 终端需手动打开并登录，本软件不会自动拉起。
         </div>
@@ -516,8 +516,8 @@ function applyMaterial(v) {
           模式切换后需重启 Runner 生效。
         </div>
         <h3 style="margin-top:14px">交易限制</h3>
-        <div class="row"><label>信号阈值</label><input type="number" id="cfg-exposure" step="0.01" min="0.01" max="0.5">
-          <span class="hint">|仓位| ≥ 此值才开仓（默认 0.05）</span></div>
+        <div class="row"><label>信号阈值</label><input type="number" id="cfg-exposure" step="0.01" min="0.01" max="1">
+          <span class="hint">|仓位| ≥ 此值才开仓（默认 0.7）</span></div>
         <div class="row"><label>单笔最大手数</label><input type="number" id="cfg-maxlot" step="0.01" min="0.01"></div>
         <div class="row"><label>最大同时持仓品种</label><input type="number" id="cfg-maxpos" min="1" max="20"></div>
         <div class="row"><button class="btn" onclick="saveLimits()">保存交易限制</button></div>
@@ -1876,7 +1876,7 @@ function fillRiskForm(cfg) {
   $("rk-sr-maxsl").value = ((r.sr_max_sl_pct != null ? r.sr_max_sl_pct : 0.03) * 100).toFixed(1);
   $("rk-sr-mintp").value = ((r.sr_min_tp_pct != null ? r.sr_min_tp_pct : 0.006) * 100).toFixed(1);
   $("rk-sr-maxtp").value = ((r.sr_max_tp_pct != null ? r.sr_max_tp_pct : 0.06) * 100).toFixed(1);
-  $("cfg-exposure").value = cfg.min_trade_exposure != null ? cfg.min_trade_exposure : 0.05;
+  $("cfg-exposure").value = cfg.min_trade_exposure != null ? cfg.min_trade_exposure : 0.7;
   $("cfg-maxlot").value = cfg.max_lot_per_trade != null ? cfg.max_lot_per_trade : 1.0;
   $("cfg-maxpos").value = cfg.max_open_positions != null ? cfg.max_open_positions : 3;
   fillSRSymbolOptions(cfg);

@@ -20,7 +20,7 @@ import subprocess
 import sys
 import time
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
@@ -62,7 +62,7 @@ _job_lock = threading.RLock()
 CREATE_NO_WINDOW = 0x08000000
 CREATE_NEW_PROCESS_GROUP = 0x00000200
 
-app = FastAPI(title="MT5AutoTrader", version="1.1.1")
+app = FastAPI(title="MT5AutoTrader", version="1.1.2")
 
 
 @app.middleware("http")
@@ -495,8 +495,10 @@ def _balance_history_points(days: int = 90, max_points: int = 400, *, client=Non
         import MetaTrader5 as mt5
         offset = client.server_time_offset() or 0
         start = now - days * 86400
-        deals = mt5.history_deals_get(datetime.utcfromtimestamp(start + offset),
-                                      datetime.utcfromtimestamp(now + offset))
+        deals = mt5.history_deals_get(
+            datetime.fromtimestamp(start + offset, timezone.utc),
+            datetime.fromtimestamp(now + offset, timezone.utc),
+        )
         if deals is None:
             raise HTTPException(503, "MT5 历史成交读取失败，请稍后刷新")
         deltas = sorted((float(d.time) - offset,
@@ -1277,8 +1279,10 @@ def api_mt5_history(days: int = 30, scope: str = "mine"):
         raise HTTPException(503, "MT5 未登录")
     server_offset = client.server_time_offset() or 0
     now = time.time()
-    to = datetime.utcfromtimestamp(now + server_offset)
-    frm = datetime.utcfromtimestamp(now - days * 86400 + server_offset)
+    # Broker deal epochs encode server wall time; naive datetimes are
+    # reinterpreted in the Windows timezone by the native MT5 bridge.
+    to = datetime.fromtimestamp(now + server_offset, timezone.utc)
+    frm = datetime.fromtimestamp(now - days * 86400 + server_offset, timezone.utc)
     try:
         deals = mt5.history_deals_get(frm, to)
         if deals is None:
@@ -1809,6 +1813,21 @@ def api_backtest_chart(name: str):
 
 # ── 启动 ────────────────────────────────────────────────────────────
 
+def _autostart_dry_runner() -> None:
+    if os.environ.get("MT5AUTOTRADER_OFFLINE") == "1":
+        return
+    try:
+        with CONFIG_LOCK:
+            if _runner_alive().get("process_alive"):
+                return
+            cfg = load_trader_config()
+            if cfg.get("dry_run") is not True or not cfg.get("bindings"):
+                return
+            api_runner_start()
+    except Exception as exc:
+        logger.warning(f"[看板] dry-run 自动启动失败，可在交易控制页重试: {exc}")
+
+
 def main() -> None:
     LOGS_DIR.mkdir(exist_ok=True)
     STRATEGIES_DIR.mkdir(exist_ok=True)
@@ -1821,6 +1840,7 @@ def main() -> None:
         colorize=False,
         format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level:<8} | {name}:{function}:{line} - {message}",
     )
+    _autostart_dry_runner()
     import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=APP_PORT, log_level="warning")
 

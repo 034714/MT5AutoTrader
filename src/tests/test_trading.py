@@ -34,6 +34,7 @@ import config as cfgmod  # noqa: E402
 cfgmod.TRADER_CONFIG_FILE = _TMP / "trader_config.json"
 cfgmod.save_trader_config(json.loads(json.dumps(cfgmod.DEFAULT_TRADER_CONFIG)))
 from config import Config  # noqa: E402
+Config.reload()
 
 import trading.runner as runner_mod  # noqa: E402
 import trading.mt5_client as client_mod  # noqa: E402
@@ -226,11 +227,17 @@ def test_signal_threshold():
 
     # 阈值映射（直接验证纯函数逻辑）
     from strategy_manager.signal import target_to_direction
-    Config.MIN_TRADE_EXPOSURE = 0.05
-    check("0.06 → 做多", target_to_direction(0.06, 0.05) == 1)
-    check("-0.06 → 做空", target_to_direction(-0.06, 0.05) == -1)
-    check("0.03 → 观望", target_to_direction(0.03, 0.05) == 0)
-    check("-0.03 → 观望", target_to_direction(-0.03, 0.05) == 0)
+    from unittest.mock import patch
+    with patch.object(Config, "MIN_TRADE_EXPOSURE", 0.05):
+        check("0.06 → 做多", target_to_direction(0.06, 0.05) == 1)
+        check("-0.06 → 做空", target_to_direction(-0.06, 0.05) == -1)
+        check("0.03 → 观望", target_to_direction(0.03, 0.05) == 0)
+        check("-0.03 → 观望", target_to_direction(-0.03, 0.05) == 0)
+    with patch.object(Config, "MIN_TRADE_EXPOSURE", 0.7):
+        check("0.7 → 做多", target_to_direction(0.7) == 1)
+        check("-0.7 → 做空", target_to_direction(-0.7) == -1)
+        check("0.699999 → 观望", target_to_direction(0.699999) == 0)
+        check("-0.699999 → 观望", target_to_direction(-0.699999) == 0)
 
 
 # ── 测试 2：同向不重复开仓 ───────────────────────────────────────

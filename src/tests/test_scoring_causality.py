@@ -142,6 +142,11 @@ class CausalityTests(unittest.TestCase):
 
 
 class NumericalScoringTests(unittest.TestCase):
+    def setUp(self):
+        self.threshold = patch.object(Config, "MIN_TRADE_EXPOSURE", .05)
+        self.threshold.start()
+        self.addCleanup(self.threshold.stop)
+
     def test_calmar_equal_weight_time_path(self):
         scorer = MT5Backtest(cost_rate=0, periods_per_year=1)
         pnl = torch.tensor([[.3, -.4, .2], [-.1, .2, .1]], dtype=torch.float64)
@@ -172,6 +177,20 @@ class NumericalScoringTests(unittest.TestCase):
             dirs, starts = MT5Backtest._direction_runs(pos)
             self.assertEqual(dirs.tolist()[0], [target_to_direction(v) for v in pos.tolist()[0]])
             self.assertEqual(starts.sum().item(), 2)
+
+    def test_direction_threshold_07_equal_and_just_below(self):
+        from strategy_manager.signal import target_to_direction, compute_target_positions
+        below = math.nextafter(.7, 0.)
+        pos = torch.tensor([[below, .7, -below, -.7]], dtype=torch.float64)
+        with patch.object(Config, "MIN_TRADE_EXPOSURE", .7):
+            dirs, starts = MT5Backtest._direction_runs(pos)
+            self.assertEqual(dirs.tolist(), [[0, 1, 0, -1]])
+            self.assertEqual(starts.sum().item(), 2)
+            self.assertEqual(dirs.tolist()[0], [target_to_direction(v) for v in pos.tolist()[0]])
+            with patch("strategy_manager.signal.torch.tanh", return_value=pos):
+                gated = compute_target_positions(torch.zeros_like(pos))
+            torch.testing.assert_close(gated, torch.tensor([[0., .7, 0., -.7]], dtype=torch.float64),
+                                       rtol=0, atol=0)
 
     def test_offline_tail_close_cost_and_trade_reconciliation(self):
         engine = BacktestEngine([0], cost_rate=.01, periods_per_year=1)

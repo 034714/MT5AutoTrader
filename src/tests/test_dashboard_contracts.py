@@ -64,6 +64,36 @@ class DashboardContractTests(unittest.TestCase):
             client.assert_not_called()
             sub.Popen.assert_not_called()
 
+    def test_history_uses_aware_server_epoch_window(self):
+        now = 1791296700.0
+        self.client.magic = 20260904
+        self.client.server_time_offset = lambda: 10800
+        deal = SimpleNamespace(position_id=62417586, time=1791296130,
+                               entry=0, magic=20260904, type=1, volume=.1,
+                               price=31245.48, profit=0., commission=-.1,
+                               swap=0., symbol="NQ100_", comment="mock")
+        exit_deal = SimpleNamespace(**vars(deal))
+        exit_deal.time = 1791296410
+        exit_deal.entry = 1
+        exit_deal.type = 0
+        exit_deal.price = 31244.41
+        exit_deal.profit = .11
+        exit_deal.commission = 0.
+        calls = []
+        def history(frm, to):
+            calls.append((frm, to))
+            return (deal, exit_deal) if frm.tzinfo is app.timezone.utc and to.tzinfo is app.timezone.utc else ()
+        with patch.dict(sys.modules, {"MetaTrader5": SimpleNamespace(history_deals_get=history)}), \
+             patch.object(app.time, "time", return_value=now):
+            result = app.api_mt5_history(days=7)
+        frm, to = calls[0]
+        self.assertEqual(to.timestamp(), now + 10800)
+        self.assertEqual(frm.timestamp(), now - 7 * 86400 + 10800)
+        self.assertEqual(result["total_deals"], 2)
+        self.assertEqual(len(result["closed"]), 1)
+        self.assertEqual(result["closed"][0]["position_id"], 62417586)
+        self.assertEqual(result["closed"][0]["profit"], .01)
+
     def test_invalid_config_types_do_not_call_save(self):
         with patch.object(app, "save_trader_config") as save:
             with self.assertRaises(app.HTTPException):
@@ -100,6 +130,22 @@ class DashboardContractTests(unittest.TestCase):
             await app.local_origin_guard(good, next_call)
             self.assertTrue(called)
         asyncio.run(call_chain())
+
+    def test_startup_preserves_existing_runner_and_requires_bound_dry_mode(self):
+        for offline, alive, dry, bindings, expected in (
+            (False, True, False, [{"symbol": "TEST"}], 0),
+            (False, False, False, [{"symbol": "TEST"}], 0),
+            (False, False, True, [], 0),
+            (True, False, True, [{"symbol": "TEST"}], 0),
+            (False, False, True, [{"symbol": "TEST"}], 1),
+        ):
+            with self.subTest(offline=offline, alive=alive, dry=dry, bindings=bindings), \
+                 patch.dict(app.os.environ, {"MT5AUTOTRADER_OFFLINE": "1" if offline else "0"}), \
+                 patch.object(app, "_runner_alive", return_value={"process_alive": alive}), \
+                 patch.object(app, "load_trader_config", return_value={"dry_run": dry, "bindings": bindings}), \
+                 patch.object(app, "api_runner_start") as start:
+                app._autostart_dry_runner()
+                self.assertEqual(start.call_count, expected)
 
     def test_runner_start_uses_busy_lock_without_spawning(self):
         acquired = app._runner_start_lock.acquire(blocking=False)

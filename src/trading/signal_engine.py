@@ -131,7 +131,7 @@ def rates_to_raw_dict(rates) -> dict[str, torch.Tensor] | None:
 def compute_signal(
     formulas: list[list[int]],
     raw_dict: dict[str, torch.Tensor],
-    min_trade_exposure: float = 0.05,
+    min_trade_exposure: float = 0.7,
     *,
     semantics_version: str = "legacy-v1",
 ) -> dict[str, Any]:

@@ -36,7 +36,7 @@
     "sr_partial_min_phold": 0.6,
     "reentry_cooldown_sec": 60
   },
-  "min_trade_exposure": 0.8,
+  "min_trade_exposure": 0.7,
   "max_lot_per_trade": 1.0,
   "max_open_positions": 5,
   "magic_number": 20260904,

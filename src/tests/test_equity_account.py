@@ -55,6 +55,8 @@ class EquityAccountTests(unittest.TestCase):
         app.api_equity_history(days=7)
         self.assertEqual(len(calls), 1)
         frm, to = calls[0]
+        self.assertIs(frm.tzinfo, app.timezone.utc)
+        self.assertIs(to.tzinfo, app.timezone.utc)
         self.assertGreaterEqual((to - frm).days, 7)
         self.assertLessEqual((to - frm).days, 9)  # +1 day 边沿
         self.assertEqual(app.api_equity_history(days=900)["days"], 365)

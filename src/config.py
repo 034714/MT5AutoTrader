@@ -86,7 +86,7 @@ DEFAULT_TRADER_CONFIG: dict = {
         "reentry_cooldown_sec": 60,   # 全平后同品种自动再入场冷却；0 可显式关闭
     },
     # ── 交易限制 ─────────────────────────────────────────────
-    "min_trade_exposure": 0.05,           # |tanh(factor)| 低于此值视为空仓
+    "min_trade_exposure": 0.7,           # |tanh(factor)| 低于此值视为空仓
     "max_lot_per_trade": 1.0,
     "max_open_positions": 3,
     "magic_number": 20260904,
@@ -253,7 +253,7 @@ class Config:
     COST_RATE = 0.0003
 
     # ── 信号阈值 ────────────────────────────────────────────
-    MIN_TRADE_EXPOSURE = float(_TRADER.get("min_trade_exposure", 0.05))
+    MIN_TRADE_EXPOSURE = float(_TRADER.get("min_trade_exposure", 0.7))
 
     # ── 风控 ────────────────────────────────────────────────
     STOP_LOSS_PCT = float(_RISK.get("stop_loss_pct", -0.02))
@@ -290,7 +290,7 @@ class Config:
         global _TRADER
         _TRADER = load_trader_config()
         risk = _TRADER.get("risk", {})
-        cls.MIN_TRADE_EXPOSURE = float(_TRADER.get("min_trade_exposure", 0.05))
+        cls.MIN_TRADE_EXPOSURE = float(_TRADER.get("min_trade_exposure", 0.7))
         cls.STOP_LOSS_PCT = float(risk.get("stop_loss_pct", -0.02))
         cls.MAX_OPEN_POSITIONS = int(_TRADER.get("max_open_positions", 3))
         cls.MAX_LOT_PER_TRADE = float(_TRADER.get("max_lot_per_trade", 1.0))

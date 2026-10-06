@@ -21,7 +21,7 @@ from torch import Tensor
 # ── 保留实盘用的阈值参数（实盘 Runner 可能还读取这些常量）──────────────────
 ENTRY_THRESHOLD: float = 0.3
 EXIT_THRESHOLD:  float = 0.1
-MIN_TRADE_EXPOSURE: float = 0.05
+MIN_TRADE_EXPOSURE: float = 0.7
 
 
 def _min_trade_exposure() -> float:

@@ -134,6 +134,24 @@ class QuickBacktestTests(unittest.TestCase):
         self.assertEqual(result["summary"]["net_profit"], 0)
         self.assertEqual(result["summary"]["win_rate"], 0)
 
+    def test_threshold_default_and_explicit_boundaries(self):
+        for threshold in (None, .05, .7, .8):
+            if threshold is None:
+                self.cfg.pop("min_trade_exposure", None)
+                expected = .7
+            else:
+                self.cfg["min_trade_exposure"] = threshold
+                expected = threshold
+            below = np.nextafter(expected, 0.)
+            for position, side in ((expected, "LONG"), (-expected, "SHORT"),
+                                   (below, None), (-below, None)):
+                with self.subTest(threshold=threshold, position=position):
+                    result = self.run_bt(np.full(1300, position))
+                    self.assertEqual(result["assumptions"]["signal_threshold"], expected)
+                    self.assertEqual([t["side"] for t in result["trades"]],
+                                     [] if side is None else [side])
+        self.assertFalse((self.root / "trader_config.json").exists())
+
     def test_invalid_input_and_lot(self):
         for payload in ({"bars": True}, {"bars": 499}, {"bars": 50001}, {"bars": 500.0},
                         {"lot": "0.2"}, {"lot": float("nan")}, {"lot": True}, {"lot": .15},
