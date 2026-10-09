@@ -4,7 +4,9 @@ import json
 import math
 import os
 import pathlib
+import pickle
 import random
+import uuid
 import sys
 import time
 
@@ -77,42 +79,93 @@ def _strategy_file_for_symbol(symbol: str | None, timeframe: str | None = None) 
     return str(strategy_path(symbol, timeframe))
 
 
-def _strategy_write_allowed(path: str) -> bool:
-    """Never overwrite a legacy/unreadable strategy using incomparable scores."""
-    p = pathlib.Path(path)
-    if not p.exists():
-        return True
-    try:
-        return json.loads(p.read_text(encoding="utf-8")).get("scoring_version") == _current_scoring_version()
-    except (OSError, ValueError, AttributeError):
-        return False
+class CheckpointPreflightError(ValueError):
+    """Known incompatibility or safe decoding failure, before engine mutation."""
 
 
-def save_strategy_artifact(path, payload) -> bool:
-    """Preserve legacy, incomparable-context, invalid-score and better artifacts."""
+class CheckpointIdentityError(CheckpointPreflightError):
+    """Checkpoint identity is missing or differs from the requested training."""
+
+
+class CheckpointRestoreError(RuntimeError):
+    """Restoration failed; this engine must not be reused for fresh training."""
+
+
+STRATEGY_SAVE_REASONS = {
+    "no_champion": "本轮没有有效新冠军（无公式或分数非有限）",
+    "legacy_scoring": "现有策略为旧评分口径，分数不可比",
+    "feature_semantics": "特征语义版本不同，分数不可比",
+    "context": "训练上下文不同（数据/评估口径），分数不可比",
+    "unreadable": "现有策略文件无法解析",
+    "score": "现有策略分数不低于本轮结果",
+    "unchanged": "本轮冠军已保存在策略文件中",
+}
+
+
+def save_strategy_artifact(path, payload) -> str | None:
+    """尝试把策略写入 path；成功返回 None，被保护时返回原因代码（STRATEGY_SAVE_REASONS）。
+
+    保护规则不变：旧口径/不同特征语义/不同上下文/分数不更高时绝不覆盖主文件。
+    """
     try:
         score = float(payload.get("best_score"))
     except (TypeError, ValueError):
-        return False
+        return "no_champion"
     if not payload.get("formula") or not math.isfinite(score):
-        return False
+        return "no_champion"
     path = pathlib.Path(path)
     if path.exists():
         try:
             existing = json.loads(path.read_text(encoding="utf-8"))
-            if existing.get("scoring_version") != _current_scoring_version():
-                return False
-            if existing.get("feature_semantics_version") != payload.get("feature_semantics_version"):
-                return False
-            if existing.get("training_context") != payload.get("training_context"):
-                return False
+        except (OSError, ValueError):
+            return "unreadable"
+        if not isinstance(existing, dict):
+            return "unreadable"
+        if existing.get("scoring_version") != _current_scoring_version():
+            return "legacy_scoring"
+        if existing.get("feature_semantics_version") != payload.get("feature_semantics_version"):
+            return "feature_semantics"
+        if existing.get("training_context") != payload.get("training_context"):
+            return "context"
+        try:
             old_score = float(existing["best_score"])
-            if not math.isfinite(old_score) or old_score >= score:
-                return False
-        except (OSError, ValueError, TypeError, KeyError, AttributeError):
-            return False
+        except (KeyError, TypeError, ValueError):
+            return "unreadable"
+        if (math.isfinite(old_score) and old_score == score
+                and existing.get("formula") == payload.get("formula")):
+            return "unchanged"
+        if not math.isfinite(old_score) or old_score >= score:
+            return "score"
     atomic_json_write(path, payload)
-    return True
+    return None
+
+
+def _candidate_strategy_file(symbol: str | None, timeframe: str | None = None,
+                             stamp: str | None = None) -> str:
+    """候选策略路径：主文件受保护时本轮新策略另存的位置，永不覆盖主文件。"""
+    base = pathlib.Path(_strategy_file_for_symbol(symbol, timeframe))
+    # No fixed shared candidate: callers updating a run pass its stable UUID.
+    suffix = stamp or uuid.uuid4().hex
+    return str(base.with_name(f"{base.stem}_候选_{suffix}{base.suffix}"))
+
+
+def write_candidate_strategy(save_path, payload, stamp: str | None = None) -> str | None:
+    """把被保护的新策略另存为 strategies/ 下的候选文件；返回路径，失败返回 None。
+
+    候选文件带 candidate_of 字段指向被保护的主文件；策略库可正常展示、绑定，
+    由用户对比验收后手动替换主文件。"""
+    try:
+        data = dict(payload)
+        data["candidate_of"] = pathlib.Path(save_path).name
+        cand = _candidate_strategy_file(data.get("symbol"), data.get("timeframe"), stamp)
+        atomic_json_write(cand, json_safe(data))
+        return cand
+    except Exception as exc:  # noqa: BLE001
+        try:
+            tqdm.write(f"[警告] 候选策略另存失败: {exc}")
+        except Exception:
+            pass
+        return None
 
 
 def _fallback_data_file_for_symbol(symbol: str) -> tuple[str | None, str | None]:
@@ -316,6 +369,8 @@ class AlphaEngine:
             positive_only_ids=self.vm.positive_only_ids
         )
 
+        # Not checkpointed: a resumed/new engine owns a new bindable candidate.
+        self.candidate_run_id = uuid.uuid4().hex
         self.best_score   = -float('inf')
         self.best_formula = None
         self._best_snapshot: dict | None = None
@@ -1339,7 +1394,7 @@ class AlphaEngine:
             print(f"  自适应噪声   : 启用={ModelConfig.ADAPTIVE_NOISE}，范围=[{ModelConfig.NOISE_MIN}, {ModelConfig.NOISE_MAX}]")
             print(f"  部分层重置   : 启用={ModelConfig.PARTIAL_RESET}，层={ModelConfig.PARTIAL_RESET_LAYERS}")
             print(f"  重启次数     : {self._restart_count}")
-            print(f"  策略目标路径 : {_strategy_file_for_symbol(self.target_symbol, self.timeframe)}（旧口径文件受保护）")
+            print(f"  策略目标路径 : {_strategy_file_for_symbol(self.target_symbol, self.timeframe)}（受保护时新结果另存候选文件）")
 
 
     # ── 实时保存最优公式（防进程意外退出丢失）────────────────────────────────
@@ -1366,82 +1421,73 @@ class AlphaEngine:
             except Exception:
                 pass
 
+    def _live_strategy_payload(self) -> dict:
+        """构造当前最优公式的策略 JSON（供主文件与候选文件共用）。"""
+        from .vocab import VOCAB_VERSION
+        save_path = pathlib.Path(_strategy_file_for_symbol(self.target_symbol, self.timeframe))
+        existing: dict = {}
+        if save_path.exists():
+            try:
+                raw = json.loads(save_path.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    existing = raw
+            except Exception:
+                existing = {}
+        strategy_data = {
+            "scoring_version": _current_scoring_version(),
+            "feature_semantics_version": _feature_semantics_version(),
+            "vocab_version": VOCAB_VERSION,
+            "symbol": self.target_symbol,
+            "timeframe": self.timeframe,
+            "training_context": self.training_context(),
+            "formula": self.best_formula,
+            "formula_decoded": self._decode_formula(self.best_formula),
+            "best_score": self.best_score,
+        }
+        # 保留训练数据路径等元数据，避免 live 保存把 data_file 冲掉
+        for key in ("timeframe", "data_file", "mode", "train_steps"):
+            val = getattr(self, key, None)
+            if val is None:
+                val = existing.get(key)
+            if val is not None:
+                strategy_data[key] = val
+        if not strategy_data.get("data_file") and self.target_symbol:
+            data_file, tf = _fallback_data_file_for_symbol(self.target_symbol)
+            if data_file:
+                strategy_data["data_file"] = data_file
+            if tf and not strategy_data.get("timeframe"):
+                strategy_data["timeframe"] = tf
+            if data_file and not strategy_data.get("mode"):
+                strategy_data["mode"] = "parquet_file"
+        return strategy_data
+
     def _save_strategy_live(self) -> None:
         """每次 best_formula 更新时立即保存 strategy json。
         即使训练中途进程被杀（OOM/终端回收/Ctrl+C），也能保留最新最优公式。
 
-        P1-3 修复：原子写入（tmp + os.replace），避免写入中途被打断导致
-        strategy JSON 截断损坏——既丢新最优也丢旧最优。异常打印告警。
+        主文件受保护时，每个 engine/run 使用独立候选路径并持续更新；
+        可绑定的候选不会自动删除。原子写入（tmp + os.replace），异常打印告警。
         """
         # 岛模式的岛没有 target_symbol（策略由 IslandAlphaEngine 统一保存），
         # 不能让它写通用策略文件
         if self.best_formula is None or not self.target_symbol or not math.isfinite(self.best_score):
             return
         try:
-            from .vocab import VOCAB_VERSION
             save_path = _strategy_file_for_symbol(self.target_symbol, self.timeframe)
-            if not _strategy_write_allowed(save_path):
-                if not getattr(self, '_legacy_strategy_warned', False):
-                    tqdm.write(f"[评分隔离] 保留旧口径策略 {save_path}；新结果在检查点中，部署前需另存并独立验收。")
-                    self._legacy_strategy_warned = True
-                return
-            # 续训保护：磁盘上同品种/同周期既有策略分数高于本轮结果时绝不覆盖，
-            # 避免“再练 200 步”后反而把更高分的旧策略换成分数更低的检查点结果。
-            p = pathlib.Path(save_path)
-            if p.exists():
-                try:
-                    existing_score = float(json.loads(p.read_text(encoding="utf-8")).get("best_score", float("-inf")))
-                except (OSError, ValueError, TypeError, AttributeError):
-                    existing_score = float("-inf")
-                if math.isfinite(existing_score) and math.isfinite(self.best_score) and self.best_score < existing_score:
-                    if not getattr(self, '_strategy_downgrade_warned', False):
-                        tqdm.write(
-                            f"[续训保护] 既有策略 {save_path} 分数更高（{existing_score:.4f} > {self.best_score:.4f}），"
-                            "本轮结果仅在检查点中，不覆盖策略文件。"
-                        )
-                        self._strategy_downgrade_warned = True
-                    return
-            pathlib.Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-
-            existing: dict = {}
-            p = pathlib.Path(save_path)
-            if p.exists():
-                try:
-                    raw = json.loads(p.read_text(encoding="utf-8"))
-                    if isinstance(raw, dict):
-                        existing = raw
-                except Exception:
-                    existing = {}
-
-            strategy_data = {
-                "scoring_version": _current_scoring_version(),
-                "feature_semantics_version": _feature_semantics_version(),
-                "vocab_version": VOCAB_VERSION,
-                "symbol": self.target_symbol,
-                "timeframe": self.timeframe,
-                "formula": self.best_formula,
-                "best_score": self.best_score,
-                "training_context": self.training_context(),
-                "formula_decoded": self._decode_formula(self.best_formula),
-            }
-            # 保留训练数据路径等元数据，避免 live 保存把 data_file 冲掉
-            for key in ("timeframe", "data_file", "mode", "train_steps"):
-                val = getattr(self, key, None)
-                if val is None:
-                    val = existing.get(key)
-                if val is not None:
-                    strategy_data[key] = val
-            if not strategy_data.get("data_file") and self.target_symbol:
-                data_file, tf = _fallback_data_file_for_symbol(self.target_symbol)
-                if data_file:
-                    strategy_data["data_file"] = data_file
-                if tf and not strategy_data.get("timeframe"):
-                    strategy_data["timeframe"] = tf
-                if data_file and not strategy_data.get("mode"):
-                    strategy_data["mode"] = "parquet_file"
-
-            if not save_strategy_artifact(save_path, strategy_data):
-                tqdm.write(f"[策略保护] Preserved existing strategy/context: {save_path}")
+            name = pathlib.Path(save_path).name
+            payload = self._live_strategy_payload()
+            # This guard checks scoring/features/context BEFORE comparing scores.
+            reason = save_strategy_artifact(save_path, payload)
+            if reason is not None and reason not in ("no_champion", "score", "unchanged"):
+                cand = write_candidate_strategy(save_path, payload, stamp=self.candidate_run_id)
+                # Throttle only the notice, never writes or retries after a failure.
+                if cand and not getattr(self, '_context_block_warned', False):
+                    tqdm.write(f"[策略保护] 未覆盖 {name}（{STRATEGY_SAVE_REASONS.get(reason, reason)}）；"
+                               f"最新结果实时另存至 {pathlib.Path(cand).name}（本轮持续更新同一文件，结束时不再另存）")
+                    self._context_block_warned = True
+            elif reason == "score" and not getattr(self, '_strategy_downgrade_warned', False):
+                tqdm.write(f"[续训保护] 既有策略 {name} 在相同上下文下分数不低于本轮结果，不覆盖策略文件。")
+                self._strategy_downgrade_warned = True
         except Exception as exc:  # noqa: BLE001
             # 静默吞掉会让用户误以为策略已保存，实则没有
             try:
@@ -1489,16 +1535,19 @@ class AlphaEngine:
 
     def validate_checkpoint_context(self, ckpt: dict) -> bool:
         """Reject wrong identity before mutation; True means weight-only hotstart."""
-        FORMULA_VOCAB.verify(ckpt.get("vocab_version"))
+        artifact_version = ckpt.get("vocab_version")
+        if artifact_version is None:
+            raise VocabVersionMismatchError("检查点缺少词表版本，需重新训练")
+        FORMULA_VOCAB.verify(artifact_version)
         current = self.training_context()
         saved = ckpt.get("training_context")
         if saved is None:
             if current["symbol"] is not None or current["timeframe"] is not None:
-                raise ValueError("Checkpoint has no symbol/timeframe context; explicit fresh training required")
+                raise CheckpointIdentityError("检查点缺少品种/周期身份，无法确认续训对象")
             return True
         for key in ("symbol", "timeframe"):
             if saved.get(key) != current.get(key):
-                raise ValueError(f"Checkpoint {key} mismatch: {saved.get(key)!r} != {current.get(key)!r}")
+                raise CheckpointIdentityError(f"检查点 {key} mismatch：与当前品种/周期不一致")
         return (saved != current or ckpt.get("scoring_version") != _current_scoring_version())
 
     def _clear_rankings(self, reset_stops=False):
@@ -1550,13 +1599,6 @@ class AlphaEngine:
 
     def restore_checkpoint_state(self, ckpt: dict) -> int:
         """恢复 checkpoint_state() 写入的训练状态，返回已完成步数。"""
-        artifact_version = ckpt.get("vocab_version")
-        if artifact_version is None:
-            raise VocabVersionMismatchError(
-                "checkpoint 不含 vocab_version 字段（旧版产物），"
-                f"当前词表版本 {FORMULA_VOCAB.version!r}；需重新训练后加载"
-            )
-        FORMULA_VOCAB.verify(artifact_version)
         hotstart = self.validate_checkpoint_context(ckpt)
 
         self.model.load_state_dict(ckpt["model_state_dict"], strict=True)
@@ -1621,9 +1663,32 @@ class AlphaEngine:
         return path
 
     def load_checkpoint(self, path: str) -> int:
-        ckpt = torch.load(path, map_location=ModelConfig.DEVICE, weights_only=True)
+        # Only failures known to precede mutation may trigger automatic fallback.
+        try:
+            ckpt = torch.load(path, map_location=ModelConfig.DEVICE, weights_only=True)
+        except (pickle.UnpicklingError, EOFError, UnicodeDecodeError):
+            raise CheckpointPreflightError("检查点无法安全解码（损坏或含不支持的对象）") from None
+        except RuntimeError as exc:
+            if any(marker in str(exc) for marker in (
+                    "PytorchStreamReader failed reading zip archive",
+                    "invalid header or archive is corrupted", "Invalid magic number")):
+                raise CheckpointPreflightError("检查点存档损坏，无法安全解码") from None
+            raise
+        if not isinstance(ckpt, dict) or "islands" in ckpt:
+            raise ValueError("指定文件不是单引擎检查点，已保留原文件")
+        try:
+            self.validate_checkpoint_context(ckpt)
+        except VocabVersionMismatchError:
+            raise CheckpointPreflightError("检查点词表版本缺失或不兼容") from None
 
-        completed = self.restore_checkpoint_state(ckpt)
+        try:
+            completed = self.restore_checkpoint_state(ckpt)
+        except Exception as exc:
+            # load_state_dict/optimizer/history/RNG may already have mutated us.
+            # Never let even a ValueError here masquerade as safe prevalidation.
+            raise CheckpointRestoreError(
+                f"检查点状态恢复失败（{type(exc).__name__}），训练已中止；保留原文件，请勿复用此引擎"
+            ) from None
         tqdm.write(f"[检查点] 已从 {path} 恢复。"
                    f" 当前步={completed}  最优={self.best_score:.4f}"
                    f"  精英池={len(self._elite_pool)}（去重后）")

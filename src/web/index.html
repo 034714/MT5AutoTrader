@@ -32,6 +32,24 @@
   .grid { display: grid; gap: 14px; }
   .grid.cols2 { grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); }
   .grid.cols3 { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+  .chart-grid { grid-template-columns: minmax(0, 2.2fr) minmax(280px, 1fr); align-items: start; }
+  .chart-grid > *, #tab-training .grid > *, #tab-strategies .grid > * { min-width: 0; }
+  .chart-trade-key { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin: 6px 0 10px; font-size: 12px; color: var(--muted); }
+  .chart-trade-key label { display: inline-flex; align-items: center; gap: 6px; color: var(--text); cursor: pointer; }
+  .chart-trade-key span { white-space: nowrap; }
+  .chart-trade-key .buy { color: #4c8dff; }
+  .chart-trade-key .sell { color: #ff9800; }
+  .chart-trade-key .win { color: #26a69a; }
+  .chart-trade-key .loss { color: #ef5350; }
+  .training-column { display: grid; gap: 14px; align-content: start; }
+  .training-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 10px 0; }
+  .training-fields label { display: grid; gap: 4px; min-width: 0; color: var(--muted); }
+  /* (0,1,2) 高于全局 input[type=text] 的 (0,1,1)：确保 100% 宽度不被 min-width:220px 反超 */
+  .training-fields label input, .training-fields label select { width: 100%; min-width: 0; }
+  #tr-file, #cfg-datadir { flex: 1 1 180px; width: 100%; min-width: 0; max-width: 100%; }
+  #tab-training .hint, #tab-training .data-meta { overflow-wrap: anywhere; }
+  @media (max-width: 1000px) { .chart-grid { grid-template-columns: minmax(0, 1fr); } }
+  @media (max-width: 600px) { .training-fields { grid-template-columns: minmax(0, 1fr); } }
   .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
   .card h3 { font-size: 14px; color: var(--accent); margin-bottom: 10px; }
   .row { display: flex; align-items: center; gap: 10px; margin: 6px 0; flex-wrap: wrap; }
@@ -125,6 +143,7 @@
   button.btn.ghost:hover { border-color: var(--accent); color: var(--accent); }
   input, select { border-radius: 7px; transition: border-color .12s, box-shadow .12s; }
   input:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(var(--accent-rgb),.18); }
+  :is(button, input, select, a, summary, [tabindex]):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
   th { font-size: 12px; text-transform: uppercase; letter-spacing: .5px; }
   tbody tr { transition: background .1s; }
   .progress-wrap { height: 8px; border-radius: 4px; }
@@ -152,10 +171,12 @@
   html.ui-nav-left nav button.active { border-bottom: none; }
   html.ui-nav-left #nav-min { display: block; margin-top: auto; border-top: 1px solid var(--border); padding-top: 10px; }
   html.ui-nav-left main { margin-left: 166px; max-width: none; }
-  html.ui-nav-left.ui-nav-min nav { width: 46px; padding: 12px 4px; }
-  html.ui-nav-left.ui-nav-min main { margin-left: 62px; }
-  html.ui-nav-left.ui-nav-min nav button { font-size: 0; text-align: center; padding: 10px 0; border-radius: 8px; }
-  html.ui-nav-left.ui-nav-min nav button::after { content: attr(data-short); font-size: 13px; }
+  @media (min-width: 901px) {
+    html.ui-nav-left.ui-nav-min nav { width: 46px; padding: 12px 4px; }
+    html.ui-nav-left.ui-nav-min main { margin-left: 62px; }
+    html.ui-nav-left.ui-nav-min nav button { font-size: 0; text-align: center; padding: 10px 0; border-radius: 8px; }
+    html.ui-nav-left.ui-nav-min nav button::after { content: attr(data-short); font-size: 13px; }
+  }
   @media (max-width: 900px) {
     html.ui-nav-left nav { position: static; width: auto; flex-direction: row; flex-wrap: wrap; border-right: none; border-bottom: 1px solid var(--border); }
     html.ui-nav-left nav button { width: auto; border-radius: 8px 8px 0 0; }
@@ -180,6 +201,27 @@
   html.ui-solid header, html.ui-solid nav, html.ui-solid .card, html.ui-solid #overlay .box {
     background: var(--panel); backdrop-filter: none; -webkit-backdrop-filter: none;
   }
+  #tab-strategies .grid { grid-template-columns: minmax(0, 1.4fr) minmax(320px, 1fr); }
+  .strategy-table-wrap { max-width: 100%; overflow-x: auto; }
+  .strategy-table { table-layout: fixed; min-width: 620px; }
+  .strategy-table th { white-space: nowrap; }
+  .strategy-table td { overflow-wrap: anywhere; vertical-align: top; }
+  .btn-col { display: flex; flex-direction: column; gap: 6px; align-items: stretch; }
+  .btn-col .btn { width: 100%; white-space: nowrap; }
+  #bind-strategy, #bind-symbol { min-width: 0; max-width: 100%; }
+  #bind-strategy { flex: 1 1 240px; }
+  #bind-list td { overflow-wrap: anywhere; }
+  @media (max-width: 1400px) { #tab-strategies .grid { grid-template-columns: minmax(0, 1fr); } }
+  /* 渐变材质：深色渐变底 + 强调色泛光，卡片带轻微内高光；无模糊，开销低 */
+  html.ui-gradient body { background:
+      radial-gradient(900px 420px at 12% -6%, rgba(var(--accent-rgb),.16), transparent 55%),
+      radial-gradient(1100px 520px at 98% 2%, rgba(46,204,113,.07), transparent 55%),
+      linear-gradient(168deg, #0c111b 0%, #101a26 46%, #0a141d 100%) fixed; }
+  html.ui-gradient header, html.ui-gradient nav, html.ui-gradient .card, html.ui-gradient #overlay .box {
+    background: linear-gradient(180deg, rgba(27,36,49,.94), rgba(15,21,30,.96)); }
+  html.ui-gradient .card { border-color: rgba(var(--accent-rgb),.24);
+    box-shadow: 0 4px 18px rgba(0,0,0,.38), inset 0 1px 0 rgba(255,255,255,.05); }
+  html.ui-gradient input, html.ui-gradient select, html.ui-gradient .stat { background: rgba(13,19,28,.88); }
   @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
     html.ui-glass header, html.ui-glass nav, html.ui-glass .card, html.ui-glass #overlay .box { background: var(--panel); }
   }
@@ -202,7 +244,7 @@
 <script>
 /* 外观偏好尽早应用，避免刷新时先闪一下默认样式。旧 glass 布尔值继续兼容。 */
 function uiMaterial(p) {
-  return ["solid", "mica", "glass"].includes(p.material) ? p.material : (p.glass ? "glass" : "solid");
+  return ["solid", "mica", "glass", "gradient"].includes(p.material) ? p.material : (p.glass ? "glass" : "solid");
 }
 function uiAccent(v) { return /^#[0-9a-f]{6}$/i.test(v || "") ? v.toLowerCase() : "#4da3ff"; }
 function applyAccent(v) {
@@ -216,7 +258,7 @@ function applyAccent(v) {
 }
 function applyMaterial(v) {
   const el = document.documentElement;
-  ["solid", "mica", "glass"].forEach(m => el.classList.toggle("ui-" + m, v === m));
+  ["solid", "mica", "glass", "gradient"].forEach(m => el.classList.toggle("ui-" + m, v === m));
 }
 (function () {
   try {
@@ -307,7 +349,7 @@ function applyMaterial(v) {
 
   <!-- ═══ 图表分析（K线 + 手动下单 + 右键下单）═══ -->
   <section id="tab-chart" class="tab">
-    <div class="grid" style="grid-template-columns: minmax(0,2.2fr) minmax(280px,1fr); gap:14px; align-items:start">
+    <div class="grid chart-grid">
       <div class="card">
         <h3>实时 K 线与关键位</h3>
         <div class="row" style="flex-wrap:wrap">
@@ -327,6 +369,12 @@ function applyMaterial(v) {
         </div>
         <div id="sr-quick" class="hint" style="margin:2px 0 4px"></div>
         <div id="sr-chart-meta" class="hint" style="margin:4px 0 6px">加载中…</div>
+        <div class="chart-trade-key">
+          <label><input type="checkbox" id="sr-chart-trades" checked> 显示历史成交</label>
+          <span class="buy">▲ 买入开仓</span><span class="sell">▼ 卖出开仓</span>
+          <span class="win">● 盈利平仓</span><span class="loss">● 亏损平仓</span>
+          <span>悬停标记看成交详情 · 非实时信号</span>
+        </div>
         <div style="position:relative">
           <canvas id="sr-chart" height="500" style="width:100%;display:block;background:var(--panel2);border:1px solid var(--border);border-radius:6px;cursor:crosshair"></canvas>
           <div id="sr-chart-tip" style="position:absolute;display:none;pointer-events:none;background:rgba(10,12,16,.92);border:1px solid var(--border);border-radius:6px;padding:6px 9px;font-size:12px;line-height:1.5;white-space:pre;z-index:5"></div>
@@ -339,12 +387,15 @@ function applyMaterial(v) {
           </div>
           <div id="sr-ctx-menu" style="position:absolute;display:none;z-index:9;background:rgba(14,17,22,.97);border:1px solid var(--border);border-radius:8px;padding:6px;min-width:210px;box-shadow:0 8px 24px rgba(0,0,0,.5)"></div>
         </div>
+        <div id="sr-trade-note" class="hint" style="margin-top:6px">历史成交按近 7 天的仓位归并展示；平仓点为平仓均价，时间取最后一笔平仓，不是逐笔成交回放。</div>
         <div id="sr-chart-legend" class="hint" style="margin-top:6px"></div>
         <div class="hint" style="margin-top:4px">滚轮缩放 · 拖动平移 · 双击复位 · 悬停看明细 · <strong>右键点图：市价下单，或挂单（到价市价进场）——挂单先在图上拖动蓝（开仓）/红（止损）/绿（止盈）三条线，拖开仓价时止损止盈保持距离跟着走，再点「确认挂单」可在弹窗里改精确价格和手数</strong>。绿色=支撑带，红色=压力带；蓝粗线=持仓开仓价，<strong>按住它上下拖 = 止损止盈整组平移</strong>，红/绿虚线可单独拖（<strong>松手后弹确认框才生效</strong>；不在视野内时显示在上下边缘），橙虚线=止盈一半；▲/▼=历史入场（蓝=多、橙=空），圆点=离场（绿=盈利、红=亏损）。挂单以蓝虚线显示，<strong>可拖动改价</strong>，也可在右侧「当前挂单」撤销。</div>
       </div>
       <div class="card">
         <h3>市价下单</h3>
-        <div class="row"><label style="min-width:0">品种</label><input type="text" id="mn-symbol" list="mt5-symbol-list" autocomplete="off" placeholder="ETHUSD_" value="ETHUSD_" style="min-width:0;flex:1"></div>
+        <div class="row"><label style="min-width:0">品种</label>
+          <span id="mn-symbol-view" style="min-width:0;flex:1">—</span>
+          <span class="hint" style="min-width:0">自动跟随左侧图表</span></div>
         <div class="row"><label style="min-width:0">手数</label><input type="number" id="mn-lot" value="0.1" step="0.01" min="0.01" style="width:120px;min-width:0"></div>
         <div class="row">
           <button class="btn green" onclick="manualOrder('BUY')">市价买入</button>
@@ -388,7 +439,7 @@ function applyMaterial(v) {
       <div>
         <div class="card">
           <h3>绑定策略 → MT5 品种</h3>
-          <div class="row"><label>策略</label><select id="bind-strategy" style="min-width:260px"></select></div>
+          <div class="row"><label>策略</label><select id="bind-strategy"></select></div>
           <div class="row"><label>MT5 品种</label><input type="text" id="bind-symbol" list="mt5-symbol-list" autocomplete="off" placeholder="例如 ETHUSD_（注意下划线）">
             <button class="btn small ghost" onclick="loadSymbols()">拉取可选品种</button></div>
           <div id="symbol-sugg" class="hint"></div>
@@ -405,15 +456,16 @@ function applyMaterial(v) {
 
   <!-- ═══ 训练 ═══ -->
   <section id="tab-training" class="tab">
-    <div class="section-note"><strong>训练流程：</strong>选择本地 Parquet 数据 → 先用快速试跑确认环境 → 开始训练。训练完成后，最优策略会保存到本软件的 <code>strategies/</code> 文件夹，再到「策略库」手动导入并绑定。</div>
+    <div class="section-note"><strong>训练流程：</strong>选择本地 Parquet 数据，或从 MT5 获取数据 → 设置步数 → 开始训练。训练不保证产生有效冠军；有可发布结果时保存到 <code>strategies/</code>，主策略受保护时另存 <code>_候选</code> 文件。请到「策略库」人工检查并绑定，训练不会自动绑定。</div>
     <div class="grid cols2">
-      <div class="card">
+      <div class="training-column">
+        <div class="card">
         <h3>训练配置</h3>
         <div class="step">
           <div class="step-num">1</div>
           <div class="step-body">
             <div class="step-title">选择训练数据</div>
-            <div class="row"><select id="tr-file" onchange="updateTrainFileMeta(window._trainFiles || [])" style="min-width:320px;max-width:100%"></select></div>
+            <div class="row"><select id="tr-file" aria-label="本地训练数据文件" onchange="updateTrainFileMeta(window._trainFiles || [])"></select></div>
             <div class="hint">数据目录：<span id="tr-dir">加载中…</span></div>
             <div id="tr-file-meta" class="data-meta"><span>请选择数据文件</span></div>
           </div>
@@ -422,18 +474,11 @@ function applyMaterial(v) {
           <div class="step-num">2</div>
           <div class="step-body">
             <div class="step-title">设置训练参数</div>
-            <div class="row"><input type="number" id="tr-steps" placeholder="本次新增步数（留空=补到默认总步数）" min="10">
+            <div class="row"><label for="tr-steps">本次新增步数</label><input type="number" id="tr-steps" placeholder="留空=默认" min="10" aria-describedby="tr-steps-help">
               <button class="btn small ghost" onclick="setTrainPreset(200)">再练 200 步</button>
               <button class="btn small ghost" onclick="setTrainPreset(1000)">再练 1000 步</button></div>
-            <div class="field-help">步数现在指「本次再跑多少步」，不是总步数：留空则自动补到默认总步数（9000）；填 200 就在当前进度上再加 200 步。
-              这样续训不会再出现"已跑 1080 步、填 60 反而直接结束"的情况。想推倒重来才勾选"从头训练"（会清除该品种该周期的检查点，并换一个随机种子重新探索）。</div>
+            <div id="tr-steps-help" class="field-help">填 200 表示从当前进度再训练 200 步；留空补到默认总步数。勾选「从头训练」会清除该品种、周期的检查点和曲线，保留已有策略。</div>
             <div class="row"><label class="hint"><input type="checkbox" id="tr-scratch"> 从头训练（清除检查点 + 换随机种子）</label></div>
-            <div class="row"><label>训练引擎</label><select id="tr-islands">
-              <option value="0" selected>单引擎（标准，支持续训）</option>
-              <option value="3">岛模式 ×3（抗停滞，耗时×3）</option>
-              <option value="5">岛模式 ×5（抗停滞，耗时×5）</option>
-            </select></div>
-            <div class="field-help">岛模式：多个种群同时探索、定期交换精英公式，专治"分数卡住不涨"。完整阶段和中断阶段均可续训，中断时保留各岛实际已完成步数；耗时约为单引擎的岛数倍；若连续多个停滞窗口仍无进步会自动结束并保留当前最优。训练结束后最优岛会自动导出为普通检查点——之后切回单引擎即可接着岛模式的成果继续练。</div>
             <div class="row" style="margin-top:8px"><button class="btn small ghost" onclick="loadCheckpoints()">查看/选择续训检查点</button></div>
             <div id="tr-ckpt-box" class="hint" style="margin-top:6px"></div>
           </div>
@@ -443,29 +488,36 @@ function applyMaterial(v) {
           <div class="step-body">
             <div class="step-title">开始训练</div>
             <div class="row">
-              <button class="btn green" onclick="startTraining()">开始训练</button>
-              <button class="btn danger" onclick="stopTraining()">停止训练</button>
+              <button class="btn green" id="tr-start" onclick="startTraining()" disabled>开始训练</button>
+              <button class="btn danger" id="tr-stop" onclick="stopTraining()" disabled>停止训练</button>
             </div>
-            <div id="tr-msg" class="msg"></div>
-            <div class="hint">训练输出（按品种+周期命名，互不覆盖）：<code>strategies/best_品种_周期.json</code>、<code>checkpoints/</code>、训练日志。</div>
+            <div id="tr-msg" class="msg" role="status" aria-live="polite" aria-atomic="true"></div>
+            <div class="hint">输出：<code>strategies/best_品种_周期.json</code>（受保护时另存候选）、<code>checkpoints/</code>、<code>training_history/</code> 和训练日志。</div>
           </div>
         </div>
-        <div class="card" style="background:var(--panel2);margin-top:12px">
+        </div>
+        <div class="card">
           <h3>从 MT5 获取并训练</h3>
-          <div class="row"><label>品种</label><input type="text" id="mt5-symbol" list="mt5-symbol-list" autocomplete="off" placeholder="ETHUSD_" value="ETHUSD_">
-            <label>周期</label><select id="mt5-tf">
-              <option>M5</option><option>M15</option><option>M30</option>
-              <option selected>H1</option><option>H4</option><option>D1</option>
-            </select>
-            <label>根数</label><input type="number" id="mt5-bars" value="6000" min="800">
-            <button class="btn small green" onclick="startDirectTraining()">从 MT5 获取并训练</button></div>
-          <div class="row"><label>数据保存位置</label><input type="text" id="cfg-datadir" style="min-width:260px">
+          <div class="training-fields">
+            <label for="mt5-symbol">品种
+              <input type="text" id="mt5-symbol" list="mt5-symbol-list" autocomplete="off" placeholder="ETHUSD_" value="ETHUSD_"></label>
+            <label for="mt5-tf">周期
+              <select id="mt5-tf">
+                <option>M5</option><option selected>M15</option><option>M30</option>
+                <option>H1</option><option>H4</option><option>D1</option>
+              </select></label>
+            <label for="mt5-bars">根数
+              <input type="number" id="mt5-bars" value="10000" min="800"></label>
+          </div>
+          <div class="row"><button class="btn green" id="tr-direct-start" onclick="startDirectTraining()">从 MT5 获取并训练</button></div>
+          <div class="row"><label for="cfg-datadir">数据保存位置</label><input type="text" id="cfg-datadir">
             <button class="btn small ghost" onclick="saveDataDir()">保存位置</button></div>
           <div class="hint">点击后自动按上面品种、周期、根数读取 MT5，保存到指定目录并开始训练；不会单独导出。训练完成后策略仍需到“策略库”手动绑定。</div>
           <div class="row"><button class="btn small ghost" onclick="loadDataFiles()">刷新数据文件</button></div>
         </div>
       </div>
-      <div class="card">
+      <div class="training-column">
+        <div class="card">
         <h3>训练状态</h3>
         <div id="tr-progress" class="status-line"><span>未运行</span><span>—</span></div>
         <div class="progress-wrap"><div id="tr-progress-bar" class="progress-bar"></div></div>
@@ -474,13 +526,16 @@ function applyMaterial(v) {
         <h3 style="margin-top:14px">训练分数曲线（best_score）</h3>
         <canvas id="tr-chart" width="600" height="180" style="width:100%;height:180px;background:var(--panel2);border:1px solid var(--border);border-radius:6px"></canvas>
         <div id="tr-chart-meta" class="hint" style="margin-top:4px">暂无训练历史</div>
-        <div class="card" style="background:var(--panel2);margin-top:14px">
+        </div>
+        <div class="card">
           <h3>训练产物</h3>
           <div id="tr-artifacts" class="hint">加载中…</div>
           <div class="hint" style="margin-top:8px">训练完成后，打开「策略库」页即可看到新策略；交易引擎不会自动绑定，需手动绑定品种。检查点在「查看/选择续训检查点」里可单个删除。</div>
         </div>
-        <h3 style="margin-top:14px">实时日志</h3>
-        <pre class="log" id="tr-log" style="margin-top:8px">暂无日志</pre>
+        <div class="card">
+          <h3>实时日志</h3>
+          <pre class="log" id="tr-log">暂无日志</pre>
+        </div>
       </div>
     </div>
   </section>
@@ -695,9 +750,10 @@ function applyMaterial(v) {
         <div class="hint">强调色用于标题、导航、按钮及焦点；盈亏、买卖与止损止盈的语义颜色保持不变。深色背景下建议选择明亮颜色。</div>
         <div class="row"><label for="ui-material">界面材质</label>
           <select id="ui-material">
-            <option value="solid">纯色（低开销）</option>
+            <option value="solid">纯色</option>
             <option value="mica">Mica 风格（CSS 静态模拟）</option>
             <option value="glass">磨砂玻璃（半透明模糊）</option>
+            <option value="gradient">渐变（强调色泛光）</option>
           </select></div>
         <div class="hint">Mica 风格是网页内的着色渐变模拟，并非 Windows 原生 Mica，不会采样桌面壁纸。磨砂玻璃只模糊网页背后的内容；不支持模糊的浏览器自动退回纯色。</div>
         <div class="row"><label>毛玻璃模糊</label>
@@ -707,7 +763,7 @@ function applyMaterial(v) {
         <div class="hint">以上设置会自动保存，只对这台电脑的这个浏览器生效，换浏览器或换电脑需要重新设置。</div>
         <div id="ap-style-msg" class="msg" role="status"></div>
         <h3 style="margin-top:14px">后台负载说明</h3>
-        <div id="ui-load-help" class="hint">颜色和材质只影响浏览器显示，不增加 Runner 的策略计算；磨砂玻璃会增加浏览器 GPU 合成开销，低配设备建议纯色或 Mica 风格。页面隐藏或最小化后自动暂停界面轮询、图表绘制和装饰动画，已发出的请求可能完成；返回可见时立即刷新状态和当前页数据（图表/日志关闭自动刷新时保留手动控制）。隐藏期间本页面不再请求净值采样，因此可能留下采样空档。<strong>这不是停止交易：Runner、实时风控、训练和回测仍在独立后台运行，CPU 负载可能仍高；尤其多岛训练通常更耗时。要停止请使用对应的停止按钮。</strong></div>
+        <div id="ui-load-help" class="hint">颜色和材质只影响浏览器显示，不增加 Runner 的策略计算；磨砂玻璃会增加浏览器 GPU 合成开销，低配设备建议纯色或 Mica 风格。页面隐藏或最小化后自动暂停界面轮询、图表绘制和装饰动画，已发出的请求可能完成；返回可见时立即刷新状态和当前页数据（图表/日志关闭自动刷新时保留手动控制）。隐藏期间本页面不再请求净值采样，因此可能留下采样空档。<strong>这不是停止交易：Runner、实时风控、训练和回测仍在独立后台运行，CPU 负载可能仍高。要停止请使用对应的停止按钮。</strong></div>
       </div>
     </div>
   </section>
@@ -1185,16 +1241,26 @@ async function loadStrategies() {
   let data;
   try { data = await api("/api/strategies"); }
   catch (e) { $("st-list").innerHTML = "<span class='hint'>" + esc(e.message) + "</span>"; return; }
-  const rows = data.strategies.map(s => {
+  const isCand = n => (n || "").indexOf("_候选") >= 0;
+  const sorted = data.strategies.slice().sort((a, b) =>
+    ((isCand(a.name) ? 1 : 0) - (isCand(b.name) ? 1 : 0)) || String(a.name).localeCompare(String(b.name)));
+  const rows = sorted.map(s => {
     const score = s.best_score != null ? "<span class='score'>" + s.best_score.toFixed(4) + "</span>" : "—";
-    const err = s.error ? "<div class='hint' style='color:var(--red)'>" + esc(s.error) + "</div>" : "";
-    return "<tr><td>" + esc(s.name) + "</td><td>" + esc(s.symbol) + "</td><td>" + esc(s.timeframe) +
-      "</td><td>" + score + "</td><td class='hint' style='max-width:280px;word-break:break-all'>" + esc(s.formula_decoded || "") + "</td>" +
-      "<td><button class='btn small ghost' data-file='" + esc(s.file) + "' data-symbol='" + esc(s.symbol) + "' onclick=\"quickBacktest(this.dataset.file, this.dataset.symbol)\">回测</button> " +
-      "<button class='btn small danger' onclick=\"delStrategy('" + esc(s.name) + "')\">删除</button></td></tr>" + err;
+    const err = s.error ? "<tr><td colspan='6' class='hint' style='color:var(--red)'>" + esc(s.error) + "</td></tr>" : "";
+    const cand = isCand(s.name)
+      ? " <span class='pill warn' style='cursor:help' title='训练主策略受保护时另存的候选文件；对比验收后可手动替换主策略文件'>候选</span>" : "";
+    return "<tr>" +
+      "<td style='overflow-wrap:anywhere'>" + esc(s.name) + cand + "</td>" +
+      "<td>" + esc(s.symbol) + "</td><td>" + esc(s.timeframe) + "</td>" +
+      "<td>" + score + "</td>" +
+      "<td class='hint' title=\"" + esc(s.formula_decoded || "") + "\" style='overflow-wrap:anywhere'>" + esc(s.formula_decoded || "") + "</td>" +
+      "<td><div class='btn-col'>" +
+      "<button class='btn small ghost' data-file='" + esc(s.file) + "' data-symbol='" + esc(s.symbol) + "' onclick=\"quickBacktest(this.dataset.file, this.dataset.symbol)\">回测</button> " +
+      "<button class='btn small danger' onclick=\"delStrategy('" + esc(s.name) + "')\">删除</button></div></td></tr>" + err;
   }).join("");
   $("st-list").innerHTML = data.strategies.length
-    ? "<table><thead><tr><th>文件</th><th>品种</th><th>周期</th><th>分数</th><th>公式</th><th></th></tr></thead><tbody>" + rows + "</tbody></table>"
+    ? "<div class='strategy-table-wrap' role='region' aria-label='策略列表（窄屏可横向滚动）' tabindex='0'><table class='strategy-table'><colgroup><col style='width:26%'><col style='width:90px'><col style='width:52px'><col style='width:76px'><col><col style='width:76px'></colgroup>" +
+      "<thead><tr><th>文件</th><th>品种</th><th>周期</th><th>分数</th><th>公式</th><th>操作</th></tr></thead><tbody>" + rows + "</tbody></table></div>"
     : "<div class='hint'>策略库为空。先到「训练」页训练，或把 .json 策略文件放进 strategies 文件夹。</div>";
   // 绑定列表
   $("bind-list").innerHTML = (data.bindings || []).length
@@ -1207,7 +1273,9 @@ async function loadStrategyDropdowns() {
   try {
     const data = await api("/api/strategies");
     const opts = data.strategies.filter(s => !s.error)
-      .map(s => "<option value='" + esc(s.file) + "'>" + esc(s.name) + " (" + (s.best_score != null ? s.best_score.toFixed(3) : "?") + ")</option>").join("");
+      .map(s => "<option value='" + esc(s.file) + "'>" +
+        (String(s.name).indexOf("_候选") >= 0 ? "【候选】" : "") + esc(s.name) +
+        " (" + (s.best_score != null ? s.best_score.toFixed(3) : "?") + ")</option>").join("");
     $("bind-strategy").innerHTML = opts || "<option value=''>（无可用策略）</option>";
   } catch (e) { /* 下拉刷新失败忽略 */ }
 }
@@ -1576,12 +1644,15 @@ async function loadCheckpoints() {
     const render = (list, kind) => list.map(c => {
       const sel = selectedResumeFile === c.file;
       const tagTxt = c.tag === r.tag ? "本周期" : esc(c.tag);
-      return "<tr><td>" + (kind === "island" ? "岛 " : "") + c.step + " 步</td>" +
+      const delBtn = "<button class='btn small danger' onclick=\"deleteCkpt('" + esc(c.name) + "')\">删</button>";
+      const pickBtn = kind === "island" ? "" :
+        "<button class='btn small " + (sel ? "green" : "ghost") + "' onclick=\"pickResume('" +
+        esc(c.file).replace(/'/g, "\\'") + "')\">" + (sel ? "已选" : "从此续训") + "</button> ";
+      const stepTxt = (kind === "island" ? "岛（已停用）" : "") + c.step + " 步";
+      return "<tr><td>" + stepTxt + "</td>" +
         "<td class='hint'>" + tagTxt + "</td>" +
         "<td>" + esc(c.mtime) + "</td><td>" + c.size_mb + "MB</td>" +
-        "<td><button class='btn small " + (sel ? "green" : "ghost") + "' onclick=\"pickResume('" +
-          esc(c.file).replace(/'/g, "\\'") + "')\">" + (sel ? "已选" : "从此续训") + "</button> " +
-        "<button class='btn small danger' onclick=\"deleteCkpt('" + esc(c.name) + "')\">删</button></td></tr>";
+        "<td>" + pickBtn + delBtn + "</td></tr>";
     }).join("");
     const rows = render(r.single, "single") + render(r.island, "island");
     box.innerHTML = (r.single.length || r.island.length)
@@ -1610,16 +1681,19 @@ async function deleteCkpt(name) {
 async function startDirectTraining() {
   const symbol = $("mt5-symbol").value.trim();
   const steps = parseInt($("tr-steps").value, 10) || 0;
-  const bars = parseInt($("mt5-bars").value, 10) || 6000;
+  const bars = parseInt($("mt5-bars").value, 10) || 10000;
   const timeframe = $("mt5-tf").value;
-  const islands = parseInt($("tr-islands").value, 10) || 0;
   if (!symbol) { showMsg("tr-msg", "请填写 MT5 品种", false); return; }
   if (bars < 800) { showMsg("tr-msg", "K线数量至少 800 根", false); return; }
+  if (_trReq > 0 || _trRunning) return;
+  _trReq++; syncTrainingButtons();
+  showMsg("tr-msg", "正在启动：MT5 获取 " + timeframe + " → 保存数据 → 训练…", true);
   try {
-    await api("/api/training/start", { method: "POST", body: JSON.stringify({ direct_mt5: true, symbol, bars, timeframe, steps, from_scratch: $("tr-scratch").checked, islands, resume_file: selectedResumeFile }) });
-    showMsg("tr-msg", "已启动：MT5 获取 " + timeframe + " → 保存数据 → 开始训练" + (islands > 1 ? "（岛模式 ×" + islands + "）" : ""), true);
-    pollTraining();
+    await api("/api/training/start", { method: "POST", body: JSON.stringify({ direct_mt5: true, symbol, bars, timeframe, steps, from_scratch: $("tr-scratch").checked, resume_file: selectedResumeFile }) });
+    showMsg("tr-msg", "已启动：MT5 获取 " + timeframe + " → 保存数据 → 开始训练", true);
   } catch (e) { showMsg("tr-msg", e.message, false); }
+  _trReq--; syncTrainingButtons();
+  pollTraining();
 }
 async function saveDataDir() {
   const dir = $("cfg-datadir").value.trim();
@@ -1694,21 +1768,41 @@ async function loadTrainCurve() {
 }
 
 // ── 训练 ──────────────────────────────────────────────────
+let _trReq = 0;                       // 进行中的启动/停止请求数（防重复提交）
+let _trRunning = false;               // 后端最近一次报告的训练状态
+function syncTrainingButtons() {
+  // busy = 启动/停止请求还在路上；此时两个按钮都锁，避免旧响应提前解锁
+  const busy = _trReq > 0;
+  const start1 = $("tr-start"), stop1 = $("tr-stop");
+  if (start1) start1.disabled = busy || _trRunning;
+  if (stop1) stop1.disabled = busy || !_trRunning;
+  const direct = $("tr-direct-start");
+  if (direct) direct.disabled = busy || _trRunning;
+}
 async function startTraining() {
   const data_file = $("tr-file").value;
   if (!data_file) { showMsg("tr-msg", "请选择数据文件", false); return; }
+  if (_trReq > 0 || _trRunning) return;
   const steps = parseInt($("tr-steps").value, 10) || 0;
   const from_scratch = $("tr-scratch").checked;
-  const islands = parseInt($("tr-islands").value, 10) || 0;
+  _trReq++; syncTrainingButtons();
+  showMsg("tr-msg", "正在启动训练…", true);
   try {
-    const r = await api("/api/training/start", { method: "POST", body: JSON.stringify({ data_file, steps, from_scratch, islands, resume_file: selectedResumeFile }) });
-    showMsg("tr-msg", islands > 1 ? "岛模式训练已启动（" + islands + " 岛，完成后策略自动保存）" : "训练已启动（完成后策略自动保存到 strategies/）", true);
+    const r = await api("/api/training/start", { method: "POST", body: JSON.stringify({ data_file, steps, from_scratch, resume_file: selectedResumeFile }) });
+    showMsg("tr-msg", "训练已启动（完成后策略自动保存到 strategies/）", true);
   } catch (e) { showMsg("tr-msg", e.message, false); }
+  _trReq--; syncTrainingButtons();
   pollTraining();
 }
 async function stopTraining() {
-  try { await api("/api/training/stop", { method: "POST" }); showMsg("tr-msg", "已停止", true); }
-  catch (e) { showMsg("tr-msg", e.message, false); }
+  if (_trReq > 0) return;
+  _trReq++; syncTrainingButtons();
+  showMsg("tr-msg", "正在停止：等待训练进程安全保存后退出…", true);
+  try {
+    const r = await api("/api/training/stop", { method: "POST" });
+    showMsg("tr-msg", r.message || "已停止", true);
+  } catch (e) { showMsg("tr-msg", e.message, false); }
+  _trReq--; syncTrainingButtons();
   pollTraining();
 }
 let _trPace = 0;                      // 平滑后的步速（秒/步）
@@ -1717,6 +1811,8 @@ async function pollTraining() {
   if (document.hidden) return;
   try {
     const s = await api("/api/training/status");
+    _trRunning = !!s.running;
+    syncTrainingButtons();
     const p = s.progress || {};
     const info = s.info || {};
     let head = s.running ? "训练中（PID 见日志）" : "未运行";
@@ -1768,7 +1864,12 @@ async function pollTraining() {
         "<div class='kv'><span class='k'>训练日志</span><span>logs/train_*.log</span></div>";
     }
     loadTrainCurve();
-  } catch (e) { /* 忽略 */ }
+  } catch (e) {
+    // 读取失败：保留最后一次进度显示，只标注状态过期时间，恢复后自动覆盖
+    const el = $("tr-status");
+    if (el) el.textContent = "训练状态暂时读取失败（" + new Date().toLocaleTimeString() +
+      "）；以下为最后一次成功数据，稍后自动重试。";
+  }
 }
 
 // ── 交易控制 ──────────────────────────────────────────────
@@ -1784,26 +1885,53 @@ async function stopRunner() {
     setTimeout(refreshStatus, 2000);
   });
 }
+async function restartRunnerForMode(label, expectedAccountKey = null) {
+  // Runner 的 dry/live 台账固定在启动时，不能只热改模式后沿用旧进程。
+  showMsg("ctl-msg", label + "：正在停止 Runner（最多等 15 秒安全退出）…", true);
+  try {
+    await api("/api/runner/stop", { method: "POST" });
+    const status = await api("/api/status");
+    if (status.runner_process_alive || status.runner_alive) {
+      throw new Error("旧 Runner 尚未退出，已取消自动启动");
+    }
+    if (expectedAccountKey && JSON.stringify(status.account_key) !== JSON.stringify(expectedAccountKey)) {
+      throw new Error("MT5 账户已变化或断开，已取消自动启动，请重新确认账户");
+    }
+    showMsg("ctl-msg", label + "：正在启动 Runner…", true);
+    const r = await api("/api/runner/start", { method: "POST" });
+    if (!r.pid) throw new Error(r.message || "未确认新 Runner 已启动");
+    showMsg("ctl-msg", label + "：已启动新 Runner，正在连接并核对状态；请留意运行状态和日志。", true);
+  } catch (e) {
+    showMsg("ctl-msg", label + "：自动重启未完成（" + e.message + "），请在「交易控制」检查运行状态。", false);
+  }
+  setTimeout(refreshStatus, 2500);
+}
 function askGoLive() {
   askConfirm("切换为真实下单",
-    "确认让 Runner 向 MT5 发送真实订单？\n\n· 策略信号将直接开平仓\n· 切换后需重启 Runner 生效\n· 如不确定，请继续保持 dry-run",
+    "确认让 Runner 向 MT5 发送真实订单？\n\n· 策略信号将直接开平仓\n· 保存后 Runner 会自动重启生效\n· 如不确定，请继续保持 dry-run",
     async (_v, account_key) => {
       showMsg("ctl-msg", "正在保存真实下单模式…", true);
       try {
         const result = await api("/api/config", { method: "PUT", body: JSON.stringify(accountPayload(account_key, { dry_run: false })) });
-        showMsg("ctl-msg", "已切换为真实下单模式。请重启 Runner 生效。", true);
         fillRiskForm(result.config || {});
-        await refreshStatus();
+        const wasAlive = !!(lastStatus && (lastStatus.runner_alive || lastStatus.runner_process_alive));
+        if (wasAlive) await restartRunnerForMode("已切换为真实下单", account_key);
+        else { showMsg("ctl-msg", "已保存为真实下单模式；Runner 当前未运行，下次启动即按新模式运行。", true); await refreshStatus(); }
       } catch (e) { showMsg("ctl-msg", "切换失败：" + e.message, false); }
     });
 }
 async function setDryRun(dry) {
   try {
     const result = await api("/api/config", { method: "PUT", body: JSON.stringify({ dry_run: dry }) });
-    showMsg("ctl-msg", "已回到 dry-run 演练模式。请重启 Runner 生效。", true);
     fillRiskForm(result.config || {});
-    await refreshStatus();
+    if (!dry) { showMsg("ctl-msg", "已保存为真实下单模式；Runner 当前未运行，下次启动即按新模式运行。", true); }
+    else {
+      const wasAlive = !!(lastStatus && (lastStatus.runner_alive || lastStatus.runner_process_alive));
+      if (wasAlive) await restartRunnerForMode("已切回 dry-run");
+      else showMsg("ctl-msg", "已切回 dry-run 演练模式；Runner 当前未运行，下次启动即按新模式运行。", true);
+    }
   } catch (e) { showMsg("ctl-msg", "切换失败：" + e.message, false); }
+  await refreshStatus();
 }
 async function saveLimits() {
   const payload = {
@@ -1821,11 +1949,35 @@ async function saveLimits() {
 function addLevel(trigger, lock) {
   const tb = $("rk-levels");
   const tr = document.createElement("tr");
-  tr.innerHTML = "<td><input type='number' step='0.005' min='0' value='" + (trigger != null ? trigger : 0.01) + "'></td>" +
-    "<td><input type='number' step='0.005' min='0' value='" + (lock != null ? lock : 0) + "'></td>" +
+  tr.innerHTML = "<td class='hint' draggable='true' title='按住拖动调整显示顺序' style='cursor:grab;text-align:center;user-select:none'>⠿</td>" +
+    "<td><input type='number' step='0.005' min='0' value='" + (trigger != null ? trigger : 0.01) + "' aria-label='浮盈触发百分比'></td>" +
+    "<td><input type='number' step='0.005' min='0' value='" + (lock != null ? lock : 0) + "' aria-label='锁定利润百分比'></td>" +
     "<td><button class='btn small danger' onclick='this.closest(\"tr\").remove()'>删</button></td>";
   tb.appendChild(tr);
 }
+(function bindLevelDnD() {
+  const tb = $("rk-levels");
+  if (!tb || tb.dataset.dnd) return;
+  tb.dataset.dnd = "1";
+  let dragTr = null;
+  tb.addEventListener("dragstart", e => {
+    const handle = e.target.closest("td[draggable='true']");
+    dragTr = handle ? handle.closest("tr") : null;
+    if (dragTr) e.dataTransfer.setData("text/plain", "level");
+  });
+  tb.addEventListener("dragover", e => {
+    if (!dragTr) return;
+    e.preventDefault();
+    const over = e.target.closest("tr");
+    if (over && over !== dragTr && over.parentElement === tb) {
+      const rect = over.getBoundingClientRect();
+      const before = (e.clientY - rect.top) < rect.height / 2;
+      tb.insertBefore(dragTr, before ? over : over.nextSibling);
+    }
+  });
+  tb.addEventListener("drop", e => e.preventDefault());
+  tb.addEventListener("dragend", () => { dragTr = null; });
+})();
 async function saveRisk() {
   const cooldownField = $("rk-reentry-cooldown");
   const cooldown = Number(cooldownField.value);
@@ -1836,8 +1988,10 @@ async function saveRisk() {
   }
   const levels = [];
   document.querySelectorAll("#rk-levels tr").forEach(tr => {
-    const t = parseFloat(tr.children[0].querySelector("input").value);
-    const l = parseFloat(tr.children[1].querySelector("input").value);
+    const ins = tr.querySelectorAll("input");
+    if (ins.length < 2) return;
+    const t = parseFloat(ins[0].value);
+    const l = parseFloat(ins[1].value);
     if (!isNaN(t) && !isNaN(l)) levels.push([t / 100, l / 100]);   // 界面填百分比，配置存小数
   });
   levels.sort((a, b) => a[0] - b[0]);
@@ -1923,9 +2077,72 @@ const srChart = {
 };
 function srChartBarSec() {
   return { M1: 60, M5: 300, M15: 900, M30: 1800, H1: 3600, H4: 14400, D1: 86400 }[
-    $("sr-chart-tf") ? $("sr-chart-tf").value : "H1"] || 3600;
+    srChart.loadedTimeframe || ($("sr-chart-tf") ? $("sr-chart-tf").value : "H1")] || 3600;
 }
 function srChartAll() { return srChart.forming ? srChart.candles.concat([srChart.forming]) : srChart.candles; }
+function srTradeBarIndex(candles, timestamp, barSec) {
+  const ts = Number(timestamp);
+  if (!candles.length || !Number.isFinite(ts) || !(barSec > 0)) return null;
+  let lo = 0, hi = candles.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (Number(candles[mid][0]) <= ts) lo = mid + 1;
+    else hi = mid;
+  }
+  const index = lo - 1;
+  // 休市/缺失区间没有对应 K 线，不能用连续时间推算成别的交易时段。
+  return index >= 0 && ts < Number(candles[index][0]) + barSec ? index : null;
+}
+function srTradeMarkers(candles, trades, layout, barSec, currency) {
+  const { start, end, padL, padT, plotW, plotH, barsVis, lo, hi } = layout;
+  const markers = [], links = [];
+  const point = (time, price) => {
+    const index = srTradeBarIndex(candles, time, barSec), value = Number(price);
+    if (index == null || !Number.isFinite(value) || !(value > 0)) return null;
+    return { index, x: padL + (index - start + 0.5) * plotW / barsVis,
+      y: padT + (hi - value) / (hi - lo) * plotH };
+  };
+  const visible = p => p && p.index >= start && p.index < end && p.y >= padT && p.y <= padT + plotH;
+  const priceText = p => Number(p).toFixed(srChartDec(p));
+  for (const trade of trades || []) {
+    const entry = point(trade.open_time, trade.open_price);
+    const exit = trade.closed ? point(trade.close_time, trade.close_price) : null;
+    const ticket = trade.position_id == null ? "" : " · 仓位 #" + trade.position_id;
+    if (visible(entry)) {
+      const buy = trade.direction === "BUY";
+      const y = Math.max(padT + 6, Math.min(padT + plotH - 6, entry.y + (buy ? 12 : -12)));
+      markers.push({ x: entry.x, y, priceY: entry.y, shape: buy ? "buy" : "sell",
+        color: buy ? "#4c8dff" : "#ff9800", text: "历史" + (buy ? "买入开仓" : "卖出开仓") + ticket +
+          "\n" + srChartFmt(trade.open_time) + " · " + trade.volume + "手 @ " + priceText(trade.open_price) });
+    }
+    if (visible(exit)) {
+      const profit = trade.profit == null ? NaN : Number(trade.profit);
+      const known = Number.isFinite(profit);
+      const outcome = !known ? "盈亏未知" : profit > 0 ? "盈利" : profit < 0 ? "亏损" : "持平";
+      markers.push({ x: exit.x, y: exit.y, priceY: exit.y, shape: "exit",
+        color: !known || profit === 0 ? "#9aa4b2" : profit > 0 ? "#26a69a" : "#ef5350",
+        text: "历史平仓 · " + outcome + ticket + "\n" + srChartFmt(trade.close_time) +
+          "\n平仓均价 " + priceText(trade.close_price) + " · " + (trade.close_volume ?? trade.volume) + "手" +
+          "\n合计已实现 " + (known ? (profit > 0 ? "+" : "") + profit.toFixed(2) : "—") +
+          " " + (currency || "账户币种") + "（含手续费/库存费）" });
+    }
+    if (entry && exit && (visible(entry) || visible(exit))) links.push({ entry, exit });
+  }
+  return { markers, links };
+}
+function srNearestTradeMarker(markers, x, y) {
+  let best = null, distance = 12;
+  for (const marker of markers || []) {
+    const d = Math.hypot(marker.x - x, marker.y - y);
+    if (d < distance) { best = marker; distance = d; }
+  }
+  return best;
+}
+function setSRTradeVisibility() {
+  const show = $("sr-chart-trades").checked;
+  try { localStorage.setItem("mt5.chartTrades", JSON.stringify(show)); } catch (e) { /* 忽略 */ }
+  drawSRChart(); srChartTooltip();
+}
 function srChartPad(n) { return (n < 10 ? "0" : "") + n; }
 function srChartFmt(ts) {
   const d = new Date((ts - (window.__srvOff || 0)) * 1000);
@@ -1981,8 +2198,9 @@ function srChartSyncPosSelector() {
 function clearSRChart() {
   srChart.request = (srChart.request || 0) + 1;
   Object.assign(srChart, { candles: [], forming: null, zones: [], meta: {}, trades: [], markers: [], pendings: [],
-    draft: null, layout: null, lineDrag: null, drag: null, entryShift: 0, pendingShift: null, loading: false, loadedKey: null });
+    draft: null, layout: null, lineDrag: null, drag: null, entryShift: 0, pendingShift: null, loading: false, loadedKey: null, loadedTimeframe: null });
   if ($("sr-chart-legend")) $("sr-chart-legend").replaceChildren();
+  syncOrderSymbolView();   // 图表已清空：下单面板不再有可用品种
   updateDraftBar(); drawSRChart();
 }
 function chartCurrent() {
@@ -2005,6 +2223,7 @@ async function loadSRChart(silent) {
   if (srChart.loadedForSymbol !== symbol) {
     srChart.posTicket = null;          // 品种变了，重置仓位选择
     srChart.loadedForSymbol = symbol;
+    syncOrderSymbolView();             // 下单面板品种跟随图表
     srChart.entryShift = 0; srChart.pendingShift = null;   // 拖动状态一并清掉
   }
   try {
@@ -2019,13 +2238,22 @@ async function loadSRChart(silent) {
     if (JSON.stringify(r.account_key) !== currentKey || (hist && JSON.stringify(hist.account_key) !== currentKey) ||
         (pend && JSON.stringify(pend.account_key) !== currentKey)) throw new Error("账户已切换，请刷新总览和图表");
     srChart.loadedKey = requestKey;
+    srChart.loadedTimeframe = tf;
     srChart.loadedAt = Date.now();
+    // 历史浏览位置保留：viewEnd 非空 = 用户在看历史，按可见尾部时间锚定到新数据
+    const prevAll = srChartAll();
+    const prevEndTs = srChart.viewEnd != null && prevAll.length
+      ? Number(prevAll[Math.min(srChart.viewEnd, prevAll.length) - 1]?.[0]) : null;
     srChart.candles = r.candles || [];
+    syncOrderSymbolView();   // K线已加载：下单面板品种正式生效
     srChart.forming = r.forming || null;
     srChart.zones = r.zones || [];
     srChart.meta = r.info || {};
     const mine = hist && (hist.closed || []).concat(hist.open || []) || [];
     srChart.trades = mine.filter(t => t.symbol === symbol);
+    $("sr-trade-note").textContent = hist
+      ? "近 7 天本软件历史成交，按仓位归并；平仓点为平仓均价，时间取最后一笔平仓，不是逐笔成交回放。"
+      : "历史成交暂未读取成功，当前不显示成交标记；行情图仍可查看。";
     srChart.pendings = ((pend && pend.orders) || []).filter(o => o.symbol === symbol);
     // 最近看过的品种（快选条用）
     try {
@@ -2033,7 +2261,17 @@ async function loadSRChart(silent) {
       localStorage.setItem("mt5.chartRecent", JSON.stringify(rec));
     } catch (e) { /* 忽略 */ }
     renderQuickSyms();
-    srChart.viewEnd = null;   // 刷新后回到跟随最新
+    if (prevEndTs != null && Number.isFinite(prevEndTs)) {
+      const all = srChartAll();
+      let anchor = 0;
+      for (let i = all.length - 1; i >= 0; i--) {
+        if (Number(all[i][0]) <= prevEndTs) { anchor = i + 1; break; }
+      }
+      // 锚点被滚动窗口甩出（找不到更旧的数据）时回到跟随最新
+      srChart.viewEnd = anchor > 0 ? Math.min(Math.max(anchor, srChart.barsVis), all.length) : null;
+    } else {
+      srChart.viewEnd = null;   // 跟随最新
+    }
     const meta = $("sr-chart-meta");
     if (srChart.meta.error) {
       meta.textContent = srChart.meta.error;
@@ -2176,52 +2414,38 @@ function drawSRChart() {
     ctx.strokeStyle = "rgba(255,255,255,.4)";
     ctx.strokeRect(x - cw / 2 - 1.5, yh - 1.5, cw + 3, Math.max(3, yl - yh) + 3);
   }
-  // 历史成交标记（▲多入场 / ▼空入场 · 圆点=离场，绿=盈利红=亏损）
-  srChart.markers = [];
-  const barSec = srChartBarSec();
-  const t0 = all[0][0];
-  for (const t of srChart.trades || []) {
-    const fi = (ts) => (ts - t0) / barSec;   // 相对第 0 根 bar 的小数索引
-    const ein = fi(t.open_time);
-    if (ein < -0.5 || ein > n) continue;
-    const xin = padL + (ein - start + 0.5) * (plotW / barsVis);
-    const yin = yOf(t.open_price);
-    if (ein >= start - 1 && ein <= end) {
-      const buy = t.direction === "BUY";
-      const s = 5;
-      ctx.fillStyle = buy ? "#4c8dff" : "#ff9800";
-      ctx.beginPath();
-      if (buy) {
-        ctx.moveTo(xin, yin + s + 3); ctx.lineTo(xin - s, yin + s + 3 + s * 1.6);
-        ctx.lineTo(xin + s, yin + s + 3 + s * 1.6);
-      } else {
-        ctx.moveTo(xin, yin - s - 3); ctx.lineTo(xin - s, yin - s - 3 - s * 1.6);
-        ctx.lineTo(xin + s, yin - s - 3 - s * 1.6);
-      }
-      ctx.closePath(); ctx.fill();
-      srChart.markers.push({
-        x: xin, y: yin,
-        text: (buy ? "买入开仓 " : "卖出开仓 ") + t.volume + "手 @ " + t.open_price,
-      });
+  const history = srTradeMarkers(all, $("sr-chart-trades").checked ? srChart.trades : [],
+    srChart.layout, srChartBarSec(), lastStatus?.account?.currency);
+  srChart.markers = history.markers;
+  ctx.save();
+  ctx.beginPath(); ctx.rect(padL, padT, plotW, plotH); ctx.clip();
+  ctx.strokeStyle = "rgba(255,255,255,.22)";
+  ctx.setLineDash([3, 3]);
+  for (const { entry, exit } of history.links) {
+    ctx.beginPath(); ctx.moveTo(entry.x, entry.y); ctx.lineTo(exit.x, exit.y); ctx.stroke();
+  }
+  ctx.setLineDash([]);
+  for (const marker of srChart.markers) {
+    const { x, y, shape, color, priceY } = marker;
+    ctx.fillStyle = color; ctx.strokeStyle = color;
+    ctx.beginPath();
+    if (shape === "exit") {
+      ctx.arc(x, y, 4.5, 0, Math.PI * 2);
+    } else {
+      const direction = shape === "buy" ? -1 : 1;
+      ctx.moveTo(x, y + direction * 5);
+      ctx.lineTo(x - 5, y - direction * 4);
+      ctx.lineTo(x + 5, y - direction * 4);
+      ctx.closePath();
     }
-    if (t.closed && t.close_price && t.close_time) {
-      const eout = fi(t.close_time);
-      const xout = padL + (eout - start + 0.5) * (plotW / barsVis);
-      const yout = yOf(t.close_price);
-      if (eout >= start - 1 && eout <= end + 1) {
-        // 入场→离场连线
-        ctx.strokeStyle = "rgba(255,255,255,.16)";
-        ctx.beginPath(); ctx.moveTo(xin, yin); ctx.lineTo(xout, yout); ctx.stroke();
-        const win = (t.profit || 0) >= 0;
-        ctx.fillStyle = win ? "#26a69a" : "#ef5350";
-        ctx.beginPath(); ctx.arc(xout, yout, 4, 0, Math.PI * 2); ctx.fill();
-        srChart.markers.push({
-          x: xout, y: yout,
-          text: "平仓 " + (t.profit >= 0 ? "+" : "") + t.profit + " USD",
-        });
-      }
+    ctx.fill();
+    if (shape !== "exit") {
+      ctx.globalAlpha = .6;
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x, priceY); ctx.stroke();
+      ctx.globalAlpha = 1;
     }
   }
+  ctx.restore();
   // 持仓相关横线 + 右侧标签（sl/tp 可拖动；出视野的线在上下边缘显示箭头标签）
   ctx.textAlign = "left";
   srChart.layout.lines = [];
@@ -2344,13 +2568,8 @@ function srChartTooltip() {
   let text = srChartFmt(c[0]) + (idx === L.n - 1 && srChart.forming ? "（当前bar）" : "") +
     "\n开 " + c[1].toFixed(dec) + "  高 " + c[2].toFixed(dec) +
     "\n低 " + c[3].toFixed(dec) + "  收 " + c[4].toFixed(dec);
-  // 就近的历史成交标记
-  let best = null, bestD = 10;
-  for (const m of (srChart.markers || [])) {
-    const d = Math.abs(m.x - x) + Math.abs(m.y - y);
-    if (d < bestD) { bestD = d; best = m; }
-  }
-  if (best) text += "\n" + best.text;
+  const best = srNearestTradeMarker(srChart.markers, x, y);
+  if (best) text = best.text + "\n────────\nK线 " + text;
   for (const z of srChart.zones) {
     if (price >= z.low && price <= z.high) {
       text += "\n" + z.label + " " + z.center +
@@ -2362,7 +2581,7 @@ function srChartTooltip() {
   tip.style.display = "block";
   const tw = tip.offsetWidth, th = tip.offsetHeight;
   const px = x + 14 + tw > cv.clientWidth ? x - tw - 10 : x + 14;
-  tip.style.left = px + "px";
+  tip.style.left = Math.max(4, Math.min(px, cv.clientWidth - tw - 4)) + "px";
   tip.style.top = Math.max(4, y - th - 12) + "px";
 }
 function srChartHitLine(x, y) {
@@ -2386,8 +2605,7 @@ function srCtxMenu(evt) {
   const cv = $("sr-chart");
   const rect = cv.getBoundingClientRect();
   const price = srChartPriceAt(evt.clientY - rect.top);
-  const sym = $("sr-chart-symbol").value.trim();
-  if (sym) $("mn-symbol").value = sym;   // 右键的品种同步到下单面板
+  const sym = chartOrderSymbol();   // 与图表显示一致（已加载品种）
   const lot = parseFloat($("mn-lot").value);
   const dec = srChartDec(price || 1);
   const menu = $("sr-ctx-menu");
@@ -2517,7 +2735,7 @@ function srDraftStart(side, price) {
   const sign = side === "BUY" ? 1 : -1;   // 买：止损在下止盈在上；卖：反之
   srChart.draft = {
     side,
-    symbol: ($("sr-chart-symbol").value || "").trim(),
+    symbol: chartOrderSymbol(),
     price: Number(price.toFixed(srChartDec(price))),
     sl: Number((price - sign * slOff).toFixed(srChartDec(price))),
     tp: Number((price + sign * tpOff).toFixed(srChartDec(price))),
@@ -2606,11 +2824,11 @@ function cancelPending(ticket) {
   });
 }
 function pendingOrderForm() {
-  const symbol = $("mn-symbol").value.trim();
+  const symbol = chartOrderSymbol();
   const side = $("mn-pd-side").value;
   const price = parseFloat($("mn-pd-price").value);
   const lot = parseFloat($("pd-lot").value);
-  if (!symbol) { showMsg("mn-msg", "请填写品种", false); return; }
+  if (!symbol) { showMsg("mn-msg", "请先在左侧图表输入品种", false); return; }
   if (!price || price <= 0) { showMsg("mn-msg", "请填写触发价", false); return; }
   askConfirm("确认挂单（到价市价进场）",
     symbol + " " + (side === "BUY" ? "买" : "卖") + " " + lot + " 手 @ " + price + "\n" +
@@ -2744,6 +2962,8 @@ function bindSRChartEvents() {
   const cv = $("sr-chart");
   if (!cv || cv.dataset.bound) return;
   cv.dataset.bound = "1";
+  try { $("sr-chart-trades").checked = localStorage.getItem("mt5.chartTrades") !== "false"; } catch (e) { /* 忽略 */ }
+  $("sr-chart-trades").addEventListener("change", setSRTradeVisibility);
   cv.addEventListener("wheel", e => {
     e.preventDefault();
     const f = e.deltaY > 0 ? 1.15 : 1 / 1.15;
@@ -2839,6 +3059,7 @@ function bindSRChartEvents() {
   window.addEventListener("resize", () => drawSRChart());
 }
 bindSRChartEvents();
+syncTrainingButtons();   // 初始解锁启动按钮；若有任务在跑，首次 pollTraining 会纠正
 setInterval(() => {
   const sec = $("tab-chart");
   if (document.visibilityState === "visible" && sec && sec.classList.contains("active") &&
@@ -2846,10 +3067,22 @@ setInterval(() => {
 }, 15000);
 
 // ── 手动交易 ──────────────────────────────────────────────
+function chartOrderSymbol() {
+  // 下单品种 = 图表当前实际显示（已加载出K线）的品种；图表为空则返回空并阻止下单，
+  // 避免输入框改了但还没刷新时，下单品种和图表显示不一致。
+  if (typeof srChart !== "undefined" && srChart && srChart.loadedForSymbol && srChart.candles.length) {
+    return srChart.loadedForSymbol;
+  }
+  return "";
+}
+function syncOrderSymbolView() {
+  const el = $("mn-symbol-view");
+  if (el) el.textContent = chartOrderSymbol() || "（请先在图表加载品种）";
+}
 async function manualOrder(direction) {
-  const symbol = $("mn-symbol").value.trim();
+  const symbol = chartOrderSymbol();
   const lot = parseFloat($("mn-lot").value);
-  if (!symbol) { showMsg("mn-msg", "请填写品种", false); return; }
+  if (!symbol) { showMsg("mn-msg", "请先在左侧图表输入品种", false); return; }
   const text = direction === "CLOSE_ALL"
     ? "全部平掉 " + symbol + " 的持仓？"
     : "市价 " + (direction === "BUY" ? "买入" : "卖出") + " " + symbol + " " + lot + " 手？";

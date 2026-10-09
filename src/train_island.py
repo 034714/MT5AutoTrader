@@ -1,6 +1,9 @@
 """
 train_island.py — 岛模式训练（多起点并行 + 精英迁移）
 
+【已停用】看板不再提供岛模式入口（/api/training/start 固定单引擎，
+mt5_train.py 已移除 --islands）；本模块仅供命令行手动调用与测试。
+
 用法:
     python train_island.py --data-file D:\\K线数据\\BTCUSD__H1.parquet [--islands 3] [--steps 3000]
 
