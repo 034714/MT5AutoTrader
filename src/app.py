@@ -1439,8 +1439,8 @@ def api_training_start(payload: dict):
     from_scratch = bool(payload.get("from_scratch"))
     steps = int(payload.get("steps", 0) or 0)
     timeframe = str(payload.get("timeframe", "H1") or "H1").upper()
-    islands = int(payload.get("islands", 0) or 0)
     resume_file = str(payload.get("resume_file", "") or "").strip()
+    # 注：岛模式训练引擎已停用，payload 里的 islands 键被忽略，训练固定用单引擎。
     if resume_file:
         candidate = Path(resume_file).resolve()
         if candidate.parent != (ROOT / "checkpoints").resolve() or candidate.suffix != ".pt" or not candidate.is_file():
@@ -1461,8 +1461,6 @@ def api_training_start(payload: dict):
                "--bars", str(bars), "--timeframe", timeframe]
         if steps > 0:
             cmd.extend(["--steps", str(steps)])
-        if islands > 1:
-            cmd.extend(["--islands", str(islands)])
         if resume_file:
             cmd.extend(["--resume-file", resume_file])
         if from_scratch:
@@ -1473,11 +1471,7 @@ def api_training_start(payload: dict):
         data_file = str(payload.get("data_file", "")).strip()
         if not data_file or not Path(data_file).exists():
             raise HTTPException(400, "数据文件不存在")
-        if islands > 1:
-            cmd = [_venv_python(), "-u", "src/train_island.py",
-                   "--data-file", data_file, "--islands", str(islands)]
-        else:
-            cmd = [_venv_python(), "-u", "src/train_file.py", "--data-file", data_file]
+        cmd = [_venv_python(), "-u", "src/train_file.py", "--data-file", data_file]
         if from_scratch:
             cmd.append("--from-scratch")
         if steps > 0:
@@ -1490,8 +1484,9 @@ def api_training_start(payload: dict):
     log_file = LOGS_DIR / f"train_{log_name}_{int(time.time())}.log"
     result = training_job.start(cmd, log_file, {
         "data_file": data_file, "direct_mt5": direct_mt5,
+        "symbol": symbol if direct_mt5 else None,
         "from_scratch": from_scratch, "steps": steps, "timeframe": timeframe,
-        "islands": islands, "resume_file": resume_file,
+        "resume_file": resume_file,
     })
     result["log"] = str(log_file)
     return result
@@ -1501,7 +1496,8 @@ def api_training_start(payload: dict):
 def api_training_checkpoints(data_file: str = ""):
     """列出某数据文件（品种+周期）可用的检查点，供前端可视化选择续训起点。
 
-    返回单引擎 ckpt_ 与岛模式 island_ckpt_ 两类，各带步数、最优分、时间、大小。
+    返回单引擎 ckpt_ 与遗留岛模式 island_ckpt_ 两类（岛模式已停用，岛检查点
+    仅展示供清理，不能再从此续训），各带步数、最优分、时间、大小。
     """
     data_file = str(data_file or "").strip()
     if not data_file:
@@ -1611,8 +1607,6 @@ def api_training_status():
             info["symbol"], info["timeframe"] = sym, tf
         except Exception:
             pass
-    if int(args.get("islands", 0) or 0) > 1:
-        info["engine"] = f"island×{args['islands']}"
     st["info"] = info
     # 训练产物实时状态：检查点占用 + 策略文件
     ck_dir = ROOT / "checkpoints"
@@ -1641,19 +1635,22 @@ def api_training_curve(symbol: str = ""):
     else:
         arg_file = str(training_job.args.get("data_file") or "")
         candidates = []
-        if arg_file and arg_file.endswith(".parquet"):
+        if training_job.args.get("direct_mt5"):
+            sym = str(training_job.args.get("symbol") or "").strip()
+            tf = str(training_job.args.get("timeframe") or "").strip().upper()
+            if sym and tf:
+                candidates.append(history_dir / f"training_history_{sym}_{tf}.json")
+        elif arg_file and Path(arg_file).suffix.lower() == ".parquet":
             try:
                 from data_pipeline.parquet_manager import parse_parquet_filename
                 sym, tf = parse_parquet_filename(arg_file)
                 tag = f"{sym}_{tf}" if tf else sym
             except (ValueError, OSError):
                 tag = Path(arg_file).stem
-            island = int(training_job.args.get("islands", 0) or 0) > 1
-            if island:
-                candidates.append(history_dir / f"training_history_{tag}_island.json")
             candidates.append(history_dir / f"training_history_{tag}.json")
-        candidates.extend(sorted(history_dir.glob("training_history_*.json"),
-                                 key=lambda p: p.stat().st_mtime, reverse=True))
+        if not training_job.args:
+            candidates.extend(sorted(history_dir.glob("training_history_*.json"),
+                                     key=lambda p: p.stat().st_mtime, reverse=True))
     for path in candidates:
         if not path.exists():
             continue

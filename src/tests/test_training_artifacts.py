@@ -334,6 +334,256 @@ class CheckpointContextTests(unittest.TestCase):
         _save_strategy(other, "SYNTH", "H1", "synthetic.parquet")
         self.assertEqual(path.read_bytes(), before)
 
+    # ── 不兼容检查点归档回退 ────────────────────────────────────────────
+    def _make_no_context_ckpt(self, good_path, step: int) -> Path:
+        payload = torch.load(good_path, map_location="cpu", weights_only=True)
+        payload.pop("training_context")
+        payload.pop("scoring_version")
+        bad = self.tmp / "checkpoints" / f"ckpt_SYNTH_H1_step_{step:04d}.pt"
+        torch.save(payload, bad)
+        return bad
+
+    def test_resume_archives_incompatible_and_falls_back_to_older(self):
+        from train_file import _resume_or_fresh
+        source = self.engine()
+        source.best_formula, source.best_score = [0], 1.5
+        good = Path(source.save_checkpoint(4))
+        bad = self._make_no_context_ckpt(good, 9)
+        engine = self.engine()
+        with contextlib.redirect_stdout(io.StringIO()):
+            start = _resume_or_fresh(engine, "SYNTH_H1", None)
+        self.assertEqual(start, 4)
+        self.assertEqual(engine.best_score, 1.5)
+        self.assertFalse(bad.exists())
+        self.assertTrue(list((self.tmp / "checkpoints" / "incompatible").rglob(bad.name)))
+        self.assertTrue(good.exists())
+
+    def test_explicit_resume_wrong_identity_rejects_without_archive_or_mutation(self):
+        from train_file import _resume_or_fresh
+        from model_core.engine import CheckpointIdentityError
+        for symbol, timeframe in (("OTHER", "H1"), ("SYNTH", "M5")):
+            with self.subTest(symbol=symbol, timeframe=timeframe):
+                source = self.engine(symbol=symbol, timeframe=timeframe)
+                source.best_formula, source.best_score = [0], 1.5
+                checkpoint = Path(source.save_checkpoint(4))
+                original = checkpoint.read_bytes()
+                engine = self.engine()
+                model_before = copy.deepcopy(engine.model.state_dict())
+                with contextlib.redirect_stdout(io.StringIO()), \
+                        patch("train_file._archive_checkpoint") as archive, \
+                        patch("train_file._tag_checkpoints") as auto_candidates:
+                    with self.assertRaisesRegex(CheckpointIdentityError, "mismatch"):
+                        _resume_or_fresh(engine, "SYNTH_H1", str(checkpoint))
+                archive.assert_not_called()
+                auto_candidates.assert_not_called()
+                self.assertEqual(checkpoint.read_bytes(), original)
+                self.assertFalse((self.tmp / "checkpoints" / "incompatible").exists())
+                self.assertEqual(engine.completed_steps, 0)
+                self.assertIsNone(engine.best_formula)
+                for key, value in model_before.items():
+                    self.assertTrue(torch.equal(value, engine.model.state_dict()[key]), key)
+
+    def test_resume_all_incompatible_archives_and_starts_fresh(self):
+        from train_file import _resume_or_fresh
+        source = self.engine()
+        (self.tmp / "checkpoints").mkdir(parents=True, exist_ok=True)
+        bad_ctx = self.tmp / "checkpoints" / "ckpt_SYNTH_H1_step_0009.pt"
+        payload = source.checkpoint_state(9)
+        payload.pop("training_context")
+        payload.pop("scoring_version")
+        torch.save(payload, bad_ctx)
+        bad_voc = self.tmp / "checkpoints" / "ckpt_SYNTH_H1_step_0005.pt"
+        torch.save({"untrusted": Exception("junk")}, bad_voc)
+        engine = self.engine()
+        with contextlib.redirect_stdout(io.StringIO()):
+            start = _resume_or_fresh(engine, "SYNTH_H1", None)
+        self.assertEqual(start, 0)
+        self.assertIsNone(engine.best_formula)
+        incompat = self.tmp / "checkpoints" / "incompatible"
+        self.assertFalse(bad_ctx.exists())
+        self.assertFalse(bad_voc.exists())
+        self.assertTrue(list(incompat.rglob(bad_ctx.name)))
+        self.assertTrue(list(incompat.rglob(bad_voc.name)))
+
+    def test_resume_skips_island_checkpoint_without_archiving(self):
+        from train_file import _resume_or_fresh
+        island = self.tmp / "checkpoints" / "island_ckpt_SYNTH_H1_step_0002.pt"
+        island.parent.mkdir(parents=True, exist_ok=True)
+        island.write_bytes(b"not a real checkpoint")
+        engine = self.engine()
+        with contextlib.redirect_stdout(io.StringIO()):
+            start = _resume_or_fresh(engine, "SYNTH_H1", str(island))
+        self.assertEqual(start, 0)
+        self.assertTrue(island.exists())  # 岛检查点留给用户手动清理，不自动归档
+
+    def test_resume_skips_non_single_engine_payload_and_keeps_file(self):
+        from train_file import _resume_or_fresh
+        source = self.engine()
+        source.best_formula, source.best_score = [0], 1.5
+        good = Path(source.save_checkpoint(4))
+        (self.tmp / "checkpoints").mkdir(parents=True, exist_ok=True)
+        bad = self.tmp / "checkpoints" / "ckpt_SYNTH_H1_step_0007.pt"
+        torch.save({"islands": []}, bad)   # 岛结构载荷，非单引擎检查点
+        engine = self.engine()
+        with contextlib.redirect_stdout(io.StringIO()):
+            start = _resume_or_fresh(engine, "SYNTH_H1", None)
+        self.assertEqual(start, 4)   # 跳过坏载荷，落到更早的合法检查点
+        self.assertTrue(bad.exists())  # 原文件保留，不自动归档
+        self.assertTrue(good.exists())
+
+    def test_resume_restore_failure_aborts_and_keeps_file(self):
+        from train_file import _resume_or_fresh
+        from model_core.engine import CheckpointRestoreError
+        source = self.engine()
+        source.best_formula, source.best_score = [0], 1.5
+        good = Path(source.save_checkpoint(4))
+        payload = torch.load(good, map_location="cpu", weights_only=True)
+        del payload["model_state_dict"][sorted(payload["model_state_dict"])[0]]
+        bad = self.tmp / "checkpoints" / "ckpt_SYNTH_H1_step_0007.pt"
+        torch.save(payload, bad)   # 身份校验可通过、恢复中途必失败
+        engine = self.engine()
+        with contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(CheckpointRestoreError):
+                _resume_or_fresh(engine, "SYNTH_H1", None)
+        self.assertTrue(bad.exists())  # 中止且保留原文件，绝不带病从头训练
+
+    # ── 策略保护候选另存 ────────────────────────────────────────────────
+    def test_save_strategy_blocked_writes_run_candidate(self):
+        from train_file import _save_strategy
+        from utils.training_artifacts import strategy_path
+        from trading.signal_engine import load_strategy_file
+        main_path = strategy_path("SYNTH", "H1")
+        main_path.parent.mkdir(parents=True, exist_ok=True)
+        # 旧口径文件：无 scoring_version，受保护
+        main_path.write_text(json.dumps({
+            "symbol": "SYNTH", "timeframe": "H1", "formula": [0],
+            "best_score": 3.5, "formula_decoded": "x"}), encoding="utf-8")
+        before = main_path.read_bytes()
+        source = self.engine()
+        source.best_formula, source.best_score = [0], 9.9
+        _save_strategy(source, "SYNTH", "H1", "synthetic.parquet")
+        self.assertEqual(main_path.read_bytes(), before)  # 主文件原样保留
+        candidates = list(main_path.parent.glob("best_SYNTH_H1_候选_*.json"))
+        self.assertEqual(len(candidates), 1)
+        cand = json.loads(candidates[0].read_text(encoding="utf-8"))
+        self.assertEqual(cand["best_score"], 9.9)
+        self.assertEqual(cand["candidate_of"], main_path.name)
+        self.assertEqual(cand["symbol"], "SYNTH")
+        # 候选文件能在策略库正常解析
+        meta = load_strategy_file(candidates[0])
+        self.assertEqual(meta["best_score"], 9.9)
+        self.assertIn(source.candidate_run_id, candidates[0].name)
+        self.assertFalse(main_path.with_name("best_SYNTH_H1_候选.json").exists())
+
+    def test_save_strategy_finalizes_single_candidate_per_run(self):
+        from train_file import _save_strategy
+        from utils.training_artifacts import strategy_path
+        main_path = strategy_path("SYNTH", "H1")
+        main_path.parent.mkdir(parents=True, exist_ok=True)
+        # 实时候选可被绑定，最终保存不能改名或残留旧分数。
+        main_path.write_text(json.dumps({
+            "symbol": "SYNTH", "timeframe": "H1", "formula": [0],
+            "best_score": 3.5, "formula_decoded": "x"}), encoding="utf-8")
+        source = self.engine()
+        source.best_formula, source.best_score = [0], 9.9
+        source._save_strategy_live()
+        live = list(main_path.parent.glob("best_SYNTH_H1_候选_*.json"))
+        self.assertEqual(len(live), 1)
+        source.best_formula, source.best_score = [1], 10.1
+        _save_strategy(source, "SYNTH", "H1", "synthetic.parquet")
+        _save_strategy(source, "SYNTH", "H1", "synthetic.parquet")
+        after = list(main_path.parent.glob("best_SYNTH_H1_候选_*.json"))
+        self.assertEqual(after, live)
+        final = json.loads(after[0].read_text(encoding="utf-8"))
+        self.assertEqual(final["best_score"], 10.1)
+        self.assertEqual(final["formula"], [1])
+        self.assertEqual(final["data_file"], str(Path("synthetic.parquet").resolve()))
+
+    def test_same_champion_final_save_reports_already_saved(self):
+        from train_file import _save_strategy
+        from utils.training_artifacts import strategy_path
+        source = self.engine()
+        source.best_formula, source.best_score = [0], 9.9
+        source._save_strategy_live()
+        main_path = strategy_path("SYNTH", "H1")
+        before = main_path.read_bytes()
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            _save_strategy(source, "SYNTH", "H1", "synthetic.parquet")
+        self.assertIn("本轮冠军已在", output.getvalue())
+        self.assertNotIn("未覆盖", output.getvalue())
+        self.assertNotIn("仅在检查点", output.getvalue())
+        self.assertEqual(main_path.read_bytes(), before)
+        self.assertFalse(list(main_path.parent.glob("best_SYNTH_H1_候选_*.json")))
+
+    def test_candidate_paths_are_distinct_across_runs(self):
+        from train_file import _save_strategy
+        from utils.training_artifacts import strategy_path
+        main_path = strategy_path("SYNTH", "H1")
+        main_path.parent.mkdir(parents=True, exist_ok=True)
+        main_path.write_text(json.dumps({"formula": [0], "best_score": 3.5}), encoding="utf-8")
+        for score in (9.9, 10.1):
+            source = self.engine()
+            source.best_formula, source.best_score = [0], score
+            _save_strategy(source, "SYNTH", "H1", "synthetic.parquet")
+        candidates = list(main_path.parent.glob("best_SYNTH_H1_候选_*.json"))
+        self.assertEqual(len(candidates), 2)
+        self.assertEqual(sorted(json.loads(p.read_text(encoding="utf-8"))["best_score"]
+                                for p in candidates), [9.9, 10.1])
+
+    def test_save_strategy_worse_score_keeps_no_candidate(self):
+        from train_file import _save_strategy
+        from utils.training_artifacts import strategy_path
+        source = self.engine()
+        source.best_formula, source.best_score = [0], 9.9
+        _save_strategy(source, "SYNTH", "H1", "synthetic.parquet")
+        main_path = strategy_path("SYNTH", "H1")
+        before = main_path.read_bytes()
+        worse = self.engine()
+        worse.best_formula, worse.best_score = [0], 1.0
+        _save_strategy(worse, "SYNTH", "H1", "synthetic.parquet")
+        self.assertEqual(main_path.read_bytes(), before)
+        self.assertFalse(list(main_path.parent.glob("best_SYNTH_H1_候选_*.json")))
+
+    def test_save_strategy_artifact_reason_codes(self):
+        from model_core.engine import _current_scoring_version, _feature_semantics_version, save_strategy_artifact
+        from utils.training_artifacts import strategy_path
+        path = strategy_path("SYNTH", "H1")
+        payload = {"formula": [0], "best_score": 2.0, "scoring_version": _current_scoring_version(),
+                   "feature_semantics_version": _feature_semantics_version(), "training_context": {"a": 1}}
+        self.assertIsNone(save_strategy_artifact(path, payload))
+        self.assertEqual(save_strategy_artifact(path, {"formula": [0], "best_score": float("nan")}), "no_champion")
+        self.assertEqual(save_strategy_artifact(path, {"formula": [], "best_score": 1.0}), "no_champion")
+        self.assertEqual(save_strategy_artifact(path, payload), "unchanged")
+        self.assertEqual(save_strategy_artifact(path, dict(payload, formula=[1])), "score")
+        payload["best_score"] = 1.0
+        self.assertEqual(save_strategy_artifact(path, payload), "score")
+        # 磁盘上是旧口径文件（无 scoring_version）时，当前口径结果受保护
+        path.write_text(json.dumps({"formula": [0], "best_score": 9.9, "symbol": "SYNTH"}), encoding="utf-8")
+        self.assertEqual(save_strategy_artifact(path, payload), "legacy_scoring")
+
+    def test_live_save_blocked_by_context_writes_run_candidate(self):
+        from utils.training_artifacts import strategy_path
+        source = self.engine()
+        source.best_formula, source.best_score = [0], 9.9
+        source._save_strategy_live()   # 无已有文件时正常写主文件
+        main_path = strategy_path("SYNTH", "H1")
+        self.assertTrue(main_path.exists())
+        before = main_path.read_bytes()
+        other = self.engine(copy.deepcopy(self.data))
+        other._data_fingerprint = "refreshed"
+        other.best_formula, other.best_score = [1], 99.
+        other._save_strategy_live()
+        self.assertEqual(main_path.read_bytes(), before)  # 上下文不同：主文件不动
+        # 每个引擎/运行一个独立候选文件（可绑定，不会被跨运行覆盖或自动删除）
+        cands = list(main_path.parent.glob("best_SYNTH_H1_候选_*.json"))
+        self.assertEqual(len(cands), 1)
+        self.assertEqual(json.loads(cands[0].read_text(encoding="utf-8"))["best_score"], 99.)
+        other.best_formula, other.best_score = [2], 99.9
+        other._save_strategy_live()   # 同一运行持续更新同一个候选文件
+        self.assertEqual(len(list(main_path.parent.glob("best_SYNTH_H1_候选_*.json"))), 1)
+        self.assertEqual(json.loads(cands[0].read_text(encoding="utf-8"))["best_score"], 99.9)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
