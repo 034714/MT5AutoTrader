@@ -20,6 +20,8 @@ MT5AutoTrader 是一套独立的 MT5 策略训练、回测和自动交易工具�
 - 网页持仓面板：实时仓位同步，支持手动平仓/改止损/改止盈
 - 正确的历史成交记录（按持仓单合并，含手续费与库存费）
 - 默认 dry-run 演练模式，切换真实下单需要网页二次确认
+  <img width="1845" height="973" alt="屏幕截图 2026-10-09 224234" src="https://github.com/user-attachments/assets/462f43ba-7413-4a76-8ef0-850249e554ad" />
+
 
 ## 开箱即用（Windows 便携版）
 
